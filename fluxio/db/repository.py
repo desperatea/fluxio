@@ -256,7 +256,7 @@ async def update_daily_stats(
     stat.items_purchased = row.count
     stat.total_spent_cny = float(row.spent)
     stat.potential_value_usd = float(row.value)
-    stat.potential_profit_usd = float(row.value) - float(row.spent) / config.trading.usd_to_cny_rate
+    stat.potential_profit_usd = float(row.value) - float(row.spent) / config.fees.usd_to_cny_rate
 
     await session.commit()
     return stat

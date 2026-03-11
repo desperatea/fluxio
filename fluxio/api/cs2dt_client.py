@@ -173,6 +173,7 @@ class CS2DTClient:
 
                     async with session.request(
                         method, path, params=query_params, json=json_body,
+                        proxy=config.env.http_proxy or None,
                     ) as resp:
                         raw_bytes = await resp.read()
                         raw_text = raw_bytes.decode("utf-8")

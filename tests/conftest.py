@@ -13,6 +13,8 @@ import yaml
 @pytest.fixture(autouse=True)
 def _set_test_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Установить тестовое окружение — dry_run всегда True."""
+    monkeypatch.setenv("CS2DT_APP_KEY", "test_key_12345678")
+    monkeypatch.setenv("CS2DT_APP_SECRET", "test_secret_12345678")
     monkeypatch.setenv("C5GAME_APP_KEY", "test_key_12345678")
     monkeypatch.setenv("C5GAME_APP_SECRET", "test_secret_12345678")
     monkeypatch.setenv("STEAM_API_KEY", "test_steam_key")
@@ -32,16 +34,20 @@ def test_config_yaml(tmp_path: Path) -> Path:
     config_data: dict[str, Any] = {
         "trading": {
             "min_discount_percent": 15,
-            "min_price_cny": 0.29,
-            "max_price_cny": 5.0,
-            "max_single_purchase_cny": 5.0,
-            "daily_limit_cny": 500.0,
-            "stop_balance_cny": 50.0,
+            "min_price_usd": 0.10,
+            "max_price_usd": 5.0,
+            "max_single_purchase_usd": 5.0,
+            "daily_limit_usd": 100.0,
+            "stop_balance_usd": 10.0,
             "max_same_item_count": 3,
             "min_sales_volume_7d": 10,
-            "usd_to_cny_rate": 7.25,
             "dry_run": True,
             "semi_auto": False,
+        },
+        "fees": {
+            "steam_fee_percent": 13.0,
+            "cs2dt_fee_percent": 0.0,
+            "c5game_fee_percent": 2.5,
         },
         "monitoring": {
             "interval_seconds": 300,
@@ -51,6 +57,17 @@ def test_config_yaml(tmp_path: Path) -> Path:
         "anti_manipulation": {
             "max_price_growth_2w_percent": 30,
             "min_sales_at_current_price": 5,
+        },
+        "safety": {
+            "max_purchases_per_hour": 20,
+            "balance_anomaly_percent": 20,
+            "circuit_breaker_threshold": 5,
+            "circuit_breaker_timeout_min": 5,
+        },
+        "update_queue": {
+            "scanner_interval_seconds": 900,
+            "buyer_interval_seconds": 60,
+            "freshness_candidate_minutes": 30,
         },
         "notifications": {
             "quiet_mode": False,
@@ -64,6 +81,9 @@ def test_config_yaml(tmp_path: Path) -> Path:
                 "good_deal_found": False,
             },
         },
+        "games": [
+            {"app_id": 570, "name": "Dota 2", "enabled": True},
+        ],
         "blacklist": {"items": []},
         "whitelist": {"enabled": False, "items": []},
     }

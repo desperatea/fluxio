@@ -100,11 +100,15 @@ async def check_idempotency(
 
 
 async def check_price_range(price_cny: float) -> SafetyCheck:
-    """Проверить что цена в допустимом диапазоне."""
-    if not (config.trading.min_price_cny <= price_cny <= config.trading.max_price_cny):
+    """Проверить что цена в допустимом диапазоне (конвертация USD конфига → CNY)."""
+    usd_to_cny = config.fees.usd_to_cny_rate
+    min_price_cny = config.trading.min_price_usd * usd_to_cny
+    max_price_cny = config.trading.max_price_usd * usd_to_cny
+    if not (min_price_cny <= price_cny <= max_price_cny):
+        price_usd = price_cny / usd_to_cny
         msg = (
-            f"Цена {price_cny:.2f} CNY вне диапазона "
-            f"[{config.trading.min_price_cny:.2f}, {config.trading.max_price_cny:.2f}]"
+            f"Цена ${price_usd:.2f} вне диапазона "
+            f"[${config.trading.min_price_usd}, ${config.trading.max_price_usd}]"
         )
         return SafetyCheck(False, msg)
     return SafetyCheck(True)

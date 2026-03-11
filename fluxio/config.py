@@ -40,7 +40,7 @@ class EnvConfig:
 
     postgres_user: str = os.getenv("POSTGRES_USER", "bot")
     postgres_password: str = os.getenv("POSTGRES_PASSWORD", "secret")
-    postgres_db: str = os.getenv("POSTGRES_DB", "c5game_bot")
+    postgres_db: str = os.getenv("POSTGRES_DB", "fluxio")
     postgres_host: str = os.getenv("POSTGRES_HOST", "localhost")
     postgres_port: int = int(os.getenv("POSTGRES_PORT", "5432"))
 
@@ -73,17 +73,25 @@ class TradingConfig:
 
     def __init__(self, data: dict[str, Any]) -> None:
         self.min_discount_percent: float = data.get("min_discount_percent", 15)
-        self.min_price_cny: float = data.get("min_price_cny", 0.29)
-        self.max_price_cny: float = data.get("max_price_cny", 5.0)
-        self.max_single_purchase_cny: float = data.get("max_single_purchase_cny", 5.0)
-        self.daily_limit_cny: float = data.get("daily_limit_cny", 500.0)
-        self.stop_balance_cny: float = data.get("stop_balance_cny", 50.0)
-        self.stop_balance_usd: float = data.get("stop_balance_usd", 5.0)
+        self.min_price_usd: float = data.get("min_price_usd", 0.10)
+        self.max_price_usd: float = data.get("max_price_usd", 5.0)
+        self.max_single_purchase_usd: float = data.get("max_single_purchase_usd", 5.0)
+        self.daily_limit_usd: float = data.get("daily_limit_usd", 100.0)
+        self.stop_balance_usd: float = data.get("stop_balance_usd", 10.0)
         self.max_same_item_count: int = data.get("max_same_item_count", 3)
         self.min_sales_volume_7d: int = data.get("min_sales_volume_7d", 10)
-        self.usd_to_cny_rate: float = data.get("usd_to_cny_rate", 7.25)
         self.dry_run: bool = data.get("dry_run", True)
         self.semi_auto: bool = data.get("semi_auto", False)
+
+
+class FeesConfig:
+    """Комиссии торговых площадок и курс валют."""
+
+    def __init__(self, data: dict[str, Any]) -> None:
+        self.steam_fee_percent: float = data.get("steam_fee_percent", 13.0)
+        self.cs2dt_fee_percent: float = data.get("cs2dt_fee_percent", 0.0)
+        self.c5game_fee_percent: float = data.get("c5game_fee_percent", 2.5)
+        self.usd_to_cny_rate: float = data.get("usd_to_cny_rate", 7.25)
 
 
 class MonitoringConfig:
@@ -101,6 +109,37 @@ class AntiManipulationConfig:
     def __init__(self, data: dict[str, Any]) -> None:
         self.max_price_growth_2w_percent: float = data.get("max_price_growth_2w_percent", 30)
         self.min_sales_at_current_price: int = data.get("min_sales_at_current_price", 5)
+
+
+class SafetyConfig:
+    """Параметры безопасности и kill switch."""
+
+    def __init__(self, data: dict[str, Any]) -> None:
+        self.max_purchases_per_hour: int = data.get("max_purchases_per_hour", 20)
+        self.balance_anomaly_percent: float = data.get("balance_anomaly_percent", 20.0)
+        self.circuit_breaker_threshold: int = data.get("circuit_breaker_threshold", 5)
+        self.circuit_breaker_timeout_min: int = data.get("circuit_breaker_timeout_min", 5)
+
+
+class UpdateQueueConfig:
+    """Параметры очереди обновления цен."""
+
+    def __init__(self, data: dict[str, Any]) -> None:
+        self.scanner_interval_seconds: int = data.get("scanner_interval_seconds", 900)
+        self.buyer_interval_seconds: int = data.get("buyer_interval_seconds", 60)
+        self.freshness_candidate_minutes: int = data.get("freshness_candidate_minutes", 30)
+        self.freshness_normal_hours: int = data.get("freshness_normal_hours", 2)
+        self.freshness_low_hours: int = data.get("freshness_low_hours", 6)
+        self.full_history_interval_hours: int = data.get("full_history_interval_hours", 24)
+
+
+class GameConfig:
+    """Конфигурация одной игры."""
+
+    def __init__(self, data: dict[str, Any]) -> None:
+        self.app_id: int = data["app_id"]
+        self.name: str = data.get("name", "")
+        self.enabled: bool = data.get("enabled", False)
 
 
 class NotificationsConfig:
@@ -152,11 +191,17 @@ class AppConfig:
             self._config_mtime = CONFIG_PATH.stat().st_mtime
 
         self.trading = TradingConfig(raw.get("trading", {}))
+        self.fees = FeesConfig(raw.get("fees", {}))
         self.monitoring = MonitoringConfig(raw.get("monitoring", {}))
         self.anti_manipulation = AntiManipulationConfig(raw.get("anti_manipulation", {}))
+        self.safety = SafetyConfig(raw.get("safety", {}))
+        self.update_queue = UpdateQueueConfig(raw.get("update_queue", {}))
         self.notifications = NotificationsConfig(raw.get("notifications", {}))
         self.blacklist = BlacklistConfig(raw.get("blacklist", {}))
         self.whitelist = WhitelistConfig(raw.get("whitelist", {}))
+        self.games: list[GameConfig] = [
+            GameConfig(g) for g in raw.get("games", [{"app_id": 570, "name": "Dota 2", "enabled": True}])
+        ]
 
         self._validate()
 
@@ -165,17 +210,17 @@ class AppConfig:
         t = self.trading
         errors: list[str] = []
 
-        if t.min_price_cny > t.max_price_cny:
+        if t.min_price_usd > t.max_price_usd:
             errors.append(
-                f"min_price_cny ({t.min_price_cny}) > max_price_cny ({t.max_price_cny})"
+                f"min_price_usd ({t.min_price_usd}) > max_price_usd ({t.max_price_usd})"
             )
         if t.min_discount_percent <= 0:
             errors.append(
                 f"min_discount_percent ({t.min_discount_percent}) должен быть > 0"
             )
-        if t.daily_limit_cny <= 0:
+        if t.daily_limit_usd <= 0:
             errors.append(
-                f"daily_limit_cny ({t.daily_limit_cny}) должен быть > 0"
+                f"daily_limit_usd ({t.daily_limit_usd}) должен быть > 0"
             )
         if t.max_same_item_count < 1:
             errors.append(

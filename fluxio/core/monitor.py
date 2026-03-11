@@ -52,15 +52,18 @@ class MarketMonitor:
             logger.warning("Нет лотов на рынке — пропускаю цикл")
             return []
 
-        # 2. Фильтр по ценовому диапазону
-        min_price = config.trading.min_price_cny
-        max_price = config.trading.max_price_cny
+        # 2. Фильтр по ценовому диапазону (конвертация CNY → USD)
+        usd_to_cny = config.fees.usd_to_cny_rate
+        min_price_cny = config.trading.min_price_usd * usd_to_cny
+        max_price_cny = config.trading.max_price_usd * usd_to_cny
         filtered = [
             item for item in all_items
-            if min_price <= item.price_cny <= max_price
+            if min_price_cny <= item.price_cny <= max_price_cny
         ]
         logger.info(
-            f"После фильтра по цене ({min_price}–{max_price} CNY): "
+            f"После фильтра по цене "
+            f"(${config.trading.min_price_usd}–${config.trading.max_price_usd} USD / "
+            f"{min_price_cny:.1f}–{max_price_cny:.1f} CNY): "
             f"{len(filtered)} лотов"
         )
 

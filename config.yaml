@@ -1,15 +1,20 @@
 trading:
   min_discount_percent: 15        # Минимальный дисконт к эталону (%)
-  min_price_cny: 0.29             # Минимальная цена предмета
-  max_price_cny: 5.00             # Максимальная цена предмета
-  max_single_purchase_cny: 5.00   # Макс. бюджет на одну покупку
-  daily_limit_cny: 500.0          # Дневной лимит трат
-  stop_balance_cny: 50.0          # Остановить бота при остатке ниже
-  max_same_item_count: 3          # Макс. штук одного предмета за цикл
+  min_price_usd: 0.10             # Минимальная цена предмета (USD)
+  max_price_usd: 5.00             # Максимальная цена предмета (USD)
+  max_single_purchase_usd: 5.00   # Макс. бюджет на одну покупку (USD)
+  daily_limit_usd: 100.0          # Дневной лимит трат (USD)
+  stop_balance_usd: 10.0          # Остановить при остатке ниже (USD)
+  max_same_item_count: 3          # Макс. штук одного предмета за 24ч
   min_sales_volume_7d: 10         # Мин. продаж за 7 дней (ликвидность)
-  usd_to_cny_rate: 7.25           # Курс USD→CNY (вручную)
   dry_run: true                   # true = симуляция без реальных покупок
   semi_auto: false                # true = подтверждение покупки через Telegram
+
+fees:
+  steam_fee_percent: 13.0         # Комиссия Steam Market
+  cs2dt_fee_percent: 0.0          # Комиссия CS2DT
+  c5game_fee_percent: 2.5         # Комиссия C5Game
+  usd_to_cny_rate: 7.25           # Курс USD/CNY (для конвертации C5Game цен)
 
 monitoring:
   interval_seconds: 300           # Интервал опроса рынка (5 минут)
@@ -20,6 +25,20 @@ anti_manipulation:
   max_price_growth_2w_percent: 30 # Максимальный рост цены за 2 нед. (%)
   min_sales_at_current_price: 5   # Мин. продаж по текущей цене за месяц
 
+safety:
+  max_purchases_per_hour: 20      # Лимит покупок в час (kill switch)
+  balance_anomaly_percent: 20     # Аномалия: баланс упал на >20% за цикл
+  circuit_breaker_threshold: 5    # Ошибок подряд до отключения API
+  circuit_breaker_timeout_min: 5  # Минут паузы после отключения
+
+update_queue:
+  scanner_interval_seconds: 900   # 15 мин
+  buyer_interval_seconds: 60      # 1 мин
+  freshness_candidate_minutes: 30
+  freshness_normal_hours: 2
+  freshness_low_hours: 6
+  full_history_interval_hours: 24
+
 notifications:
   quiet_mode: false               # true = только критические алерты
   daily_report_time: "09:00"      # Время ежедневного отчёта (UTC+3)
@@ -29,11 +48,19 @@ notifications:
     low_balance: true
     daily_limit_reached: true
     api_unavailable: true
-    good_deal_found: false        # Уведомлять до покупки (в semi_auto всегда true)
+    good_deal_found: false
+
+games:
+  - app_id: 570
+    name: "Dota 2"
+    enabled: true
+  - app_id: 730
+    name: "CS2"
+    enabled: false
 
 blacklist:
   items: []                       # market_hash_name предметов
 
 whitelist:
   enabled: false
-  items: []                       # {name: "Item Name", max_price_cny: 3.0}
+  items: []                       # {name: "Item Name", max_price_usd: 3.0}

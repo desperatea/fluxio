@@ -32,4 +32,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD pgrep -f "python -m fluxio.main" || exit 1
 
 # Запуск: миграции + бот
-CMD ["sh", "-c", "alembic upgrade head 2>/dev/null; python -m fluxio.main"]
+CMD ["sh", "-c", "alembic upgrade head && python -m fluxio.main"]

@@ -34,12 +34,15 @@ class MarketScanner:
 
     async def scan(self) -> ScanResult:
         """Полный скан: обход всех категорий → фильтр → запись в БД."""
-        min_price = config.trading.min_price_cny
-        max_price = config.trading.max_price_cny
+        usd_to_cny = config.fees.usd_to_cny_rate
+        min_price = config.trading.min_price_usd * usd_to_cny
+        max_price = config.trading.max_price_usd * usd_to_cny
 
         logger.info(
             f"Скан C5Game Dota 2 — категории 1–{MAX_CATEGORY_ID}, "
-            f"фильтр цены: {min_price}–{max_price} CNY"
+            f"фильтр цены: ${config.trading.min_price_usd}–"
+            f"${config.trading.max_price_usd} USD "
+            f"({min_price:.1f}–{max_price:.1f} CNY)"
         )
 
         # 1. Обойти все категории

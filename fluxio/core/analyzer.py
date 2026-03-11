@@ -8,6 +8,10 @@
 5. Не в чёрном списке
 6. Антиманипуляция: не на искусственном бусте
 7. Whitelist (если включён)
+
+Все сравнения ведутся в USD.
+C5Game цены (CNY) конвертируются через fees.usd_to_cny_rate.
+CS2DT цены уже в USD — конвертация не нужна.
 """
 
 from __future__ import annotations
@@ -28,7 +32,7 @@ class ProfitAnalyzer:
         if self._whitelist_enabled:
             for entry in config.whitelist.items:
                 name = entry.get("name", "")
-                max_price = entry.get("max_price_cny", config.trading.max_price_cny)
+                max_price = entry.get("max_price_usd", config.trading.max_price_usd)
                 if name:
                     self._whitelist_names[name] = max_price
 
@@ -40,9 +44,17 @@ class ProfitAnalyzer:
         if self._whitelist_enabled:
             for entry in config.whitelist.items:
                 name = entry.get("name", "")
-                max_price = entry.get("max_price_cny", config.trading.max_price_cny)
+                max_price = entry.get("max_price_usd", config.trading.max_price_usd)
                 if name:
                     self._whitelist_names[name] = max_price
+
+    def _to_usd(self, price_cny: float) -> float:
+        """Конвертировать цену из CNY в USD."""
+        rate = config.fees.usd_to_cny_rate
+        if rate <= 0:
+            logger.error(f"Невалидный usd_to_cny_rate: {rate}, используется 7.25")
+            rate = 7.25
+        return price_cny / rate
 
     def analyze(self, item: MarketItem) -> AnalysisResult:
         """Проверить предмет на выгодность.
@@ -51,7 +63,9 @@ class ProfitAnalyzer:
             AnalysisResult с решением и причиной.
         """
         name = item.market_hash_name
-        usd_to_cny = config.trading.usd_to_cny_rate
+
+        # Конвертируем цену предмета (C5Game CNY) в USD
+        item_price_usd = self._to_usd(item.price_cny)
 
         # 1. Есть ли эталонная цена Steam?
         if item.steam_price is None:
@@ -61,10 +75,8 @@ class ProfitAnalyzer:
         if not steam_price_usd or steam_price_usd <= 0:
             return AnalysisResult(False, "цена Steam <= 0", item)
 
-        steam_price_cny = steam_price_usd * usd_to_cny
-
-        # 2. Дисконт
-        discount = (steam_price_cny - item.price_cny) / steam_price_cny * 100
+        # 2. Дисконт (сравнение в USD)
+        discount = (steam_price_usd - item_price_usd) / steam_price_usd * 100
         min_discount = config.trading.min_discount_percent
 
         if discount < min_discount:
@@ -73,7 +85,8 @@ class ProfitAnalyzer:
                 f"дисконт {discount:.1f}% < {min_discount}%",
                 item,
                 discount_percent=discount,
-                steam_price_cny=steam_price_cny,
+                steam_price_usd=steam_price_usd,
+                item_price_usd=item_price_usd,
             )
 
         # 3. Ликвидность
@@ -93,17 +106,20 @@ class ProfitAnalyzer:
                 f"ликвидность {estimated_7d_sales:.0f} < {min_sales} (7д)",
                 item,
                 discount_percent=discount,
-                steam_price_cny=steam_price_cny,
+                steam_price_usd=steam_price_usd,
+                item_price_usd=item_price_usd,
             )
 
-        # 4. Диапазон цены
-        if not (config.trading.min_price_cny <= item.price_cny <= config.trading.max_price_cny):
+        # 4. Диапазон цены (в USD)
+        if not (config.trading.min_price_usd <= item_price_usd <= config.trading.max_price_usd):
             return AnalysisResult(
                 False,
-                f"цена {item.price_cny} вне диапазона",
+                f"цена ${item_price_usd:.2f} вне диапазона "
+                f"${config.trading.min_price_usd}–${config.trading.max_price_usd}",
                 item,
                 discount_percent=discount,
-                steam_price_cny=steam_price_cny,
+                steam_price_usd=steam_price_usd,
+                item_price_usd=item_price_usd,
             )
 
         # 5. Чёрный список
@@ -113,7 +129,8 @@ class ProfitAnalyzer:
                 "в чёрном списке",
                 item,
                 discount_percent=discount,
-                steam_price_cny=steam_price_cny,
+                steam_price_usd=steam_price_usd,
+                item_price_usd=item_price_usd,
             )
 
         # 6. Whitelist (если включён)
@@ -124,16 +141,18 @@ class ProfitAnalyzer:
                     "не в whitelist",
                     item,
                     discount_percent=discount,
-                    steam_price_cny=steam_price_cny,
+                    steam_price_usd=steam_price_usd,
+                    item_price_usd=item_price_usd,
                 )
             wl_max_price = self._whitelist_names[name]
-            if item.price_cny > wl_max_price:
+            if item_price_usd > wl_max_price:
                 return AnalysisResult(
                     False,
-                    f"цена {item.price_cny} > whitelist лимит {wl_max_price}",
+                    f"цена ${item_price_usd:.2f} > whitelist лимит ${wl_max_price:.2f}",
                     item,
                     discount_percent=discount,
-                    steam_price_cny=steam_price_cny,
+                    steam_price_usd=steam_price_usd,
+                    item_price_usd=item_price_usd,
                 )
 
         # 7. Антиманипуляция (упрощённая — без исторических данных C5Game)
@@ -145,7 +164,8 @@ class ProfitAnalyzer:
             f"ВЫГОДНО: дисконт {discount:.1f}%, продаж ~{estimated_7d_sales:.0f}/7д",
             item,
             discount_percent=discount,
-            steam_price_cny=steam_price_cny,
+            steam_price_usd=steam_price_usd,
+            item_price_usd=item_price_usd,
         )
 
     def analyze_batch(self, items: list[MarketItem]) -> list[AnalysisResult]:
@@ -167,8 +187,8 @@ class ProfitAnalyzer:
             for r in profitable[:5]:
                 logger.info(
                     f"  {r.item.market_hash_name}: "
-                    f"c5={r.item.price_cny} CNY, "
-                    f"steam={r.steam_price_cny:.2f} CNY, "
+                    f"покупка=${r.item_price_usd:.2f}, "
+                    f"steam=${r.steam_price_usd:.2f}, "
                     f"дисконт={r.discount_percent:.1f}%"
                 )
         else:
@@ -193,7 +213,8 @@ class AnalysisResult:
         "reason",
         "item",
         "discount_percent",
-        "steam_price_cny",
+        "steam_price_usd",
+        "item_price_usd",
     )
 
     def __init__(
@@ -202,13 +223,15 @@ class AnalysisResult:
         reason: str,
         item: MarketItem,
         discount_percent: float | None = None,
-        steam_price_cny: float | None = None,
+        steam_price_usd: float | None = None,
+        item_price_usd: float | None = None,
     ) -> None:
         self.is_profitable = is_profitable
         self.reason = reason
         self.item = item
         self.discount_percent = discount_percent
-        self.steam_price_cny = steam_price_cny
+        self.steam_price_usd = steam_price_usd
+        self.item_price_usd = item_price_usd
 
     def __repr__(self) -> str:
         status = "OK" if self.is_profitable else "SKIP"
