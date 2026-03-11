@@ -1,0 +1,61 @@
+# Секреты
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# Виртуальное окружение
+venv/
+.venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Логи
+logs/
+*.log
+
+# Данные
+data/
+*.db
+*.sqlite3
+
+# Бэкапы
+backups/
+
+# Конфиг история
+config_history/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Тесты
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+
+# Claude Code
+.claude/
+
+# Временные/бинарные файлы
+*.bin
+proxy.txt.txt
+dashboard.html
+REVIEW_*.md

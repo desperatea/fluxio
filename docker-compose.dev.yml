@@ -1,0 +1,31 @@
+# Для локальной разработки: docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ./fluxio:/app/fluxio
+      - ./config.yaml:/app/config.yaml
+      - ./alembic.ini:/app/alembic.ini
+      - ./logs:/app/logs
+    environment:
+      - LOG_LEVEL=DEBUG
+    command: ["sh", "-c", "alembic upgrade head 2>/dev/null; python -m fluxio.main"]
+
+  dashboard:
+    build: .
+    container_name: fluxio-dashboard
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - DATABASE_URL=postgresql://bot:${POSTGRES_PASSWORD:-secret}@postgres:5432/${POSTGRES_DB:-c5game_bot}
+      - POSTGRES_HOST=postgres
+    ports:
+      - "8080:8080"
+    command: ["uvicorn", "fluxio.dashboard.app:app", "--host", "0.0.0.0", "--port", "8080", "--reload"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - botnet

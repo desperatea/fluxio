@@ -1,0 +1,39 @@
+trading:
+  min_discount_percent: 15        # Минимальный дисконт к эталону (%)
+  min_price_cny: 0.29             # Минимальная цена предмета
+  max_price_cny: 5.00             # Максимальная цена предмета
+  max_single_purchase_cny: 5.00   # Макс. бюджет на одну покупку
+  daily_limit_cny: 500.0          # Дневной лимит трат
+  stop_balance_cny: 50.0          # Остановить бота при остатке ниже
+  max_same_item_count: 3          # Макс. штук одного предмета за цикл
+  min_sales_volume_7d: 10         # Мин. продаж за 7 дней (ликвидность)
+  usd_to_cny_rate: 7.25           # Курс USD→CNY (вручную)
+  dry_run: true                   # true = симуляция без реальных покупок
+  semi_auto: false                # true = подтверждение покупки через Telegram
+
+monitoring:
+  interval_seconds: 300           # Интервал опроса рынка (5 минут)
+  price_history_days: 30          # Хранить историю цен N дней
+  new_listing_check: true         # Следить за новыми листингами
+
+anti_manipulation:
+  max_price_growth_2w_percent: 30 # Максимальный рост цены за 2 нед. (%)
+  min_sales_at_current_price: 5   # Мин. продаж по текущей цене за месяц
+
+notifications:
+  quiet_mode: false               # true = только критические алерты
+  daily_report_time: "09:00"      # Время ежедневного отчёта (UTC+3)
+  events:
+    purchase_success: true
+    purchase_error: true
+    low_balance: true
+    daily_limit_reached: true
+    api_unavailable: true
+    good_deal_found: false        # Уведомлять до покупки (в semi_auto всегда true)
+
+blacklist:
+  items: []                       # market_hash_name предметов
+
+whitelist:
+  enabled: false
+  items: []                       # {name: "Item Name", max_price_cny: 3.0}

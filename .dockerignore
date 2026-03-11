@@ -1,0 +1,36 @@
+# Секреты
+.env
+
+# Логи и данные
+logs/
+backups/
+config_history/
+data/
+
+# Python кэш
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# IDE / OS
+.vscode/
+.idea/
+.claude/
+*.swp
+*.swo
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Скрипты разработки
+scripts/
+
+# Docker
+docker-compose*.yml
+Dockerfile
+
+# Документация
+*.md

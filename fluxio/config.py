@@ -1,0 +1,224 @@
+"""Загрузка и горячее обновление конфигурации."""
+
+from __future__ import annotations
+
+import os
+import shutil
+import time
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+import yaml
+from dotenv import load_dotenv
+from loguru import logger
+
+# Загружаем секреты из .env
+load_dotenv()
+
+# Пути
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+CONFIG_PATH = PROJECT_ROOT / "config.yaml"
+CONFIG_HISTORY_DIR = PROJECT_ROOT / "config_history"
+CONFIG_HISTORY_DIR.mkdir(exist_ok=True)
+
+# Максимум версий конфига для хранения
+MAX_CONFIG_VERSIONS = 20
+
+
+class EnvConfig:
+    """Секреты из переменных окружения."""
+
+    c5game_app_key: str = os.getenv("C5GAME_APP_KEY", "")
+    c5game_app_secret: str = os.getenv("C5GAME_APP_SECRET", "")
+    cs2dt_app_key: str = os.getenv("CS2DT_APP_KEY", "")
+    cs2dt_app_secret: str = os.getenv("CS2DT_APP_SECRET", "")
+    steam_api_key: str = os.getenv("STEAM_API_KEY", "")
+    steam_login_secure: str = os.getenv("STEAM_LOGIN_SECURE", "").strip("'\"")
+    telegram_bot_token: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    telegram_chat_id: str = os.getenv("TELEGRAM_CHAT_ID", "")
+
+    postgres_user: str = os.getenv("POSTGRES_USER", "bot")
+    postgres_password: str = os.getenv("POSTGRES_PASSWORD", "secret")
+    postgres_db: str = os.getenv("POSTGRES_DB", "c5game_bot")
+    postgres_host: str = os.getenv("POSTGRES_HOST", "localhost")
+    postgres_port: int = int(os.getenv("POSTGRES_PORT", "5432"))
+
+    redis_url: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+
+    trade_url: str = os.getenv("TRADE_URL", "")
+
+    http_proxy: str = os.getenv("HTTP_PROXY", "")
+    https_proxy: str = os.getenv("HTTPS_PROXY", "")
+
+    log_level: str = os.getenv("LOG_LEVEL", "INFO")
+
+    @property
+    def database_url(self) -> str:
+        return (
+            f"postgresql+asyncpg://{self.postgres_user}:{self.postgres_password}"
+            f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+        )
+
+    @property
+    def database_url_sync(self) -> str:
+        return (
+            f"postgresql://{self.postgres_user}:{self.postgres_password}"
+            f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+        )
+
+
+class TradingConfig:
+    """Параметры торговли из config.yaml."""
+
+    def __init__(self, data: dict[str, Any]) -> None:
+        self.min_discount_percent: float = data.get("min_discount_percent", 15)
+        self.min_price_cny: float = data.get("min_price_cny", 0.29)
+        self.max_price_cny: float = data.get("max_price_cny", 5.0)
+        self.max_single_purchase_cny: float = data.get("max_single_purchase_cny", 5.0)
+        self.daily_limit_cny: float = data.get("daily_limit_cny", 500.0)
+        self.stop_balance_cny: float = data.get("stop_balance_cny", 50.0)
+        self.stop_balance_usd: float = data.get("stop_balance_usd", 5.0)
+        self.max_same_item_count: int = data.get("max_same_item_count", 3)
+        self.min_sales_volume_7d: int = data.get("min_sales_volume_7d", 10)
+        self.usd_to_cny_rate: float = data.get("usd_to_cny_rate", 7.25)
+        self.dry_run: bool = data.get("dry_run", True)
+        self.semi_auto: bool = data.get("semi_auto", False)
+
+
+class MonitoringConfig:
+    """Параметры мониторинга."""
+
+    def __init__(self, data: dict[str, Any]) -> None:
+        self.interval_seconds: int = data.get("interval_seconds", 300)
+        self.price_history_days: int = data.get("price_history_days", 30)
+        self.new_listing_check: bool = data.get("new_listing_check", True)
+
+
+class AntiManipulationConfig:
+    """Параметры защиты от манипуляций."""
+
+    def __init__(self, data: dict[str, Any]) -> None:
+        self.max_price_growth_2w_percent: float = data.get("max_price_growth_2w_percent", 30)
+        self.min_sales_at_current_price: int = data.get("min_sales_at_current_price", 5)
+
+
+class NotificationsConfig:
+    """Параметры уведомлений."""
+
+    def __init__(self, data: dict[str, Any]) -> None:
+        self.quiet_mode: bool = data.get("quiet_mode", False)
+        self.daily_report_time: str = data.get("daily_report_time", "09:00")
+        events = data.get("events", {})
+        self.purchase_success: bool = events.get("purchase_success", True)
+        self.purchase_error: bool = events.get("purchase_error", True)
+        self.low_balance: bool = events.get("low_balance", True)
+        self.daily_limit_reached: bool = events.get("daily_limit_reached", True)
+        self.api_unavailable: bool = events.get("api_unavailable", True)
+        self.good_deal_found: bool = events.get("good_deal_found", False)
+
+
+class BlacklistConfig:
+    """Чёрный список предметов."""
+
+    def __init__(self, data: dict[str, Any]) -> None:
+        self.items: list[str] = data.get("items", [])
+
+
+class WhitelistConfig:
+    """Белый список предметов."""
+
+    def __init__(self, data: dict[str, Any]) -> None:
+        self.enabled: bool = data.get("enabled", False)
+        self.items: list[dict[str, Any]] = data.get("items", [])
+
+
+class AppConfig:
+    """Главный конфиг приложения — объединяет .env и config.yaml."""
+
+    def __init__(self) -> None:
+        self.env = EnvConfig()
+        self._config_mtime: float = 0.0
+        self._load_yaml()
+
+    def _load_yaml(self) -> None:
+        """Загрузить/перезагрузить config.yaml."""
+        if not CONFIG_PATH.exists():
+            logger.warning("config.yaml не найден, используются значения по умолчанию")
+            raw: dict[str, Any] = {}
+        else:
+            with open(CONFIG_PATH, encoding="utf-8") as f:
+                raw = yaml.safe_load(f) or {}
+            self._config_mtime = CONFIG_PATH.stat().st_mtime
+
+        self.trading = TradingConfig(raw.get("trading", {}))
+        self.monitoring = MonitoringConfig(raw.get("monitoring", {}))
+        self.anti_manipulation = AntiManipulationConfig(raw.get("anti_manipulation", {}))
+        self.notifications = NotificationsConfig(raw.get("notifications", {}))
+        self.blacklist = BlacklistConfig(raw.get("blacklist", {}))
+        self.whitelist = WhitelistConfig(raw.get("whitelist", {}))
+
+        self._validate()
+
+    def _validate(self) -> None:
+        """Проверить корректность значений конфигурации."""
+        t = self.trading
+        errors: list[str] = []
+
+        if t.min_price_cny > t.max_price_cny:
+            errors.append(
+                f"min_price_cny ({t.min_price_cny}) > max_price_cny ({t.max_price_cny})"
+            )
+        if t.min_discount_percent <= 0:
+            errors.append(
+                f"min_discount_percent ({t.min_discount_percent}) должен быть > 0"
+            )
+        if t.daily_limit_cny <= 0:
+            errors.append(
+                f"daily_limit_cny ({t.daily_limit_cny}) должен быть > 0"
+            )
+        if t.max_same_item_count < 1:
+            errors.append(
+                f"max_same_item_count ({t.max_same_item_count}) должен быть >= 1"
+            )
+        if self.monitoring.interval_seconds < 10:
+            errors.append(
+                f"interval_seconds ({self.monitoring.interval_seconds}) должен быть >= 10"
+            )
+
+        if errors:
+            for err in errors:
+                logger.error(f"Ошибка конфигурации: {err}")
+            raise ValueError(f"Невалидная конфигурация: {'; '.join(errors)}")
+
+    def reload_if_changed(self) -> bool:
+        """Перечитать config.yaml если файл изменился. Возвращает True при обновлении."""
+        if not CONFIG_PATH.exists():
+            return False
+        current_mtime = CONFIG_PATH.stat().st_mtime
+        if current_mtime != self._config_mtime:
+            logger.info("Обнаружено изменение config.yaml — перезагружаю конфигурацию")
+            self._backup_config()
+            self._load_yaml()
+            return True
+        return False
+
+    def _backup_config(self) -> None:
+        """Создать резервную копию текущего config.yaml."""
+        if not CONFIG_PATH.exists():
+            return
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        backup_path = CONFIG_HISTORY_DIR / f"config_{timestamp}.yaml"
+        shutil.copy2(CONFIG_PATH, backup_path)
+        logger.info(f"Резервная копия конфига: {backup_path}")
+
+        # Удалить старые версии, оставить последние MAX_CONFIG_VERSIONS
+        backups = sorted(CONFIG_HISTORY_DIR.glob("config_*.yaml"))
+        if len(backups) > MAX_CONFIG_VERSIONS:
+            for old in backups[: len(backups) - MAX_CONFIG_VERSIONS]:
+                old.unlink()
+                logger.debug(f"Удалена старая версия конфига: {old}")
+
+
+# Глобальный синглтон конфига
+config = AppConfig()

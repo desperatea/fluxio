@@ -1,0 +1,107 @@
+services:
+  bot:
+    build: .
+    container_name: fluxio-bot
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - DATABASE_URL=postgresql://bot:${POSTGRES_PASSWORD:-secret}@postgres:5432/${POSTGRES_DB:-c5game_bot}
+      - REDIS_URL=redis://redis:6379/0
+      - POSTGRES_HOST=postgres
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./logs:/app/logs
+      - ./backups:/app/backups
+      - ./config_history:/app/config_history
+      - ./data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - botnet
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: fluxio-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-bot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-secret}
+      POSTGRES_DB: ${POSTGRES_DB:-c5game_bot}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-bot}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - botnet
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  redis:
+    image: redis:7-alpine
+    container_name: fluxio-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 128mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redisdata:/data
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - botnet
+    deploy:
+      resources:
+        limits:
+          memory: 192M
+
+  pgbackup:
+    image: postgres:15-alpine
+    container_name: fluxio-pgbackup
+    restart: unless-stopped
+    environment:
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_USER:-bot}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-secret}
+      PGDATABASE: ${POSTGRES_DB:-c5game_bot}
+    volumes:
+      - ./backups:/backups
+    entrypoint: >
+      sh -c "
+        while true; do
+          FILENAME=/backups/db_$$(date +%Y-%m-%d_%H-%M).sql.gz
+          pg_dump | gzip > $$FILENAME
+          echo \"Бэкап создан: $$FILENAME\"
+          find /backups -name 'db_*.sql.gz' -mtime +30 -delete
+          sleep 86400
+        done
+      "
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - botnet
+
+volumes:
+  pgdata:
+  redisdata:
+
+networks:
+  botnet:
+    driver: bridge
