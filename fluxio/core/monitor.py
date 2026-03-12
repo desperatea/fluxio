@@ -1,8 +1,8 @@
-"""Мониторинг рынка Dota 2 на C5Game.
+"""Мониторинг рынка CS2DT.
 
 Цикл мониторинга (SPEC.md раздел 7.1):
-1. Получить все страницы рынка Dota 2 (пагинация по категориям)
-2. Отфильтровать по ценовому диапазону
+1. Получить все страницы рынка (пагинация по категориям)
+2. Отфильтровать по ценовому диапазону (USD)
 3. Для отфильтрованных — запросить эталонные цены Steam
 4. Передать выгодные предметы в модуль покупки
 """
@@ -46,24 +46,22 @@ class MarketMonitor:
 
         # 1. Собрать все лоты с C5Game
         all_items = await self._fetch_all_listings()
-        logger.info(f"Получено лотов с C5Game: {len(all_items)}")
+        logger.info(f"Получено лотов: {len(all_items)}")
 
         if not all_items:
             logger.warning("Нет лотов на рынке — пропускаю цикл")
             return []
 
-        # 2. Фильтр по ценовому диапазону (конвертация CNY → USD)
-        usd_to_cny = config.fees.usd_to_cny_rate
-        min_price_cny = config.trading.min_price_usd * usd_to_cny
-        max_price_cny = config.trading.max_price_usd * usd_to_cny
+        # 2. Фильтр по ценовому диапазону (USD)
+        min_price = config.trading.min_price_usd
+        max_price = config.trading.max_price_usd
         filtered = [
             item for item in all_items
-            if min_price_cny <= item.price_cny <= max_price_cny
+            if min_price <= item.price_usd <= max_price
         ]
         logger.info(
             f"После фильтра по цене "
-            f"(${config.trading.min_price_usd}–${config.trading.max_price_usd} USD / "
-            f"{min_price_cny:.1f}–{max_price_cny:.1f} CNY): "
+            f"(${min_price}–${max_price}): "
             f"{len(filtered)} лотов"
         )
 
@@ -163,7 +161,7 @@ class MarketMonitor:
 
     @staticmethod
     def _parse_listing(data: dict[str, Any], category_id: int) -> MarketItem | None:
-        """Распарсить один лот из ответа C5Game."""
+        """Распарсить один лот из ответа API."""
         try:
             product_id = str(data.get("id", ""))
             if not product_id:
@@ -184,7 +182,7 @@ class MarketMonitor:
                 product_id=product_id,
                 item_name=item_name,
                 market_hash_name=market_hash_name,
-                price_cny=price,
+                price_usd=price,
                 category_id=category_id,
                 delivery=delivery,
                 raw_data=data,
@@ -218,13 +216,13 @@ class MarketMonitor:
 
 
 class MarketItem:
-    """Предмет с рынка C5Game + опциональная цена Steam."""
+    """Предмет с рынка + опциональная цена Steam."""
 
     __slots__ = (
         "product_id",
         "item_name",
         "market_hash_name",
-        "price_cny",
+        "price_usd",
         "category_id",
         "delivery",
         "raw_data",
@@ -236,7 +234,7 @@ class MarketItem:
         product_id: str,
         item_name: str,
         market_hash_name: str,
-        price_cny: float,
+        price_usd: float,
         category_id: int,
         delivery: int,
         raw_data: dict[str, Any],
@@ -244,7 +242,7 @@ class MarketItem:
         self.product_id = product_id
         self.item_name = item_name
         self.market_hash_name = market_hash_name
-        self.price_cny = price_cny
+        self.price_usd = price_usd
         self.category_id = category_id
         self.delivery = delivery
         self.raw_data = raw_data
@@ -254,5 +252,5 @@ class MarketItem:
         steam = f", steam=${self.steam_price.median_price_usd:.4f}" if self.steam_price else ""
         return (
             f"MarketItem({self.market_hash_name!r}, "
-            f"c5={self.price_cny} CNY{steam})"
+            f"${self.price_usd}{steam})"
         )

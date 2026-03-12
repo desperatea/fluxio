@@ -69,8 +69,8 @@ CREATE TABLE items (
     last_seen_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     steam_updated_at TIMESTAMPTZ,                     -- когда обновляли Steam цену
 
-    -- Legacy (совместимость, будет удалено)
-    min_price_cny   NUMERIC(10,4),
+    -- Мин. цена на площадке (USD)
+    min_price_usd_market NUMERIC(10,4),
     listings_count  INTEGER DEFAULT 0
 );
 

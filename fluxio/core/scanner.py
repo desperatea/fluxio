@@ -34,15 +34,12 @@ class MarketScanner:
 
     async def scan(self) -> ScanResult:
         """Полный скан: обход всех категорий → фильтр → запись в БД."""
-        usd_to_cny = config.fees.usd_to_cny_rate
-        min_price = config.trading.min_price_usd * usd_to_cny
-        max_price = config.trading.max_price_usd * usd_to_cny
+        min_price = config.trading.min_price_usd
+        max_price = config.trading.max_price_usd
 
         logger.info(
             f"Скан C5Game Dota 2 — категории 1–{MAX_CATEGORY_ID}, "
-            f"фильтр цены: ${config.trading.min_price_usd}–"
-            f"${config.trading.max_price_usd} USD "
-            f"({min_price:.1f}–{max_price:.1f} CNY)"
+            f"фильтр цены: ${min_price}–${max_price} USD"
         )
 
         # 1. Обойти все категории
@@ -61,7 +58,7 @@ class MarketScanner:
             if min_price <= lst.get("price", 0) <= max_price
         ]
         logger.info(
-            f"После фильтра по цене ({min_price}–{max_price} CNY): "
+            f"После фильтра по цене (${min_price}–${max_price}): "
             f"{len(filtered)} лотов"
         )
 
@@ -193,7 +190,7 @@ class MarketScanner:
                     rarity=info.get("rarity"),
                     quality=info.get("quality"),
                     image_url=info.get("image_url"),
-                    min_price_cny=info["min_price"],
+                    min_price_usd_market=info["min_price"],
                     listings_count=info["count"],
                 )
                 items_saved += 1
@@ -214,7 +211,7 @@ class MarketScanner:
                     c5_id=c5_id,
                     market_hash_name=lst.get("marketHashName", ""),
                     item_name=lst.get("itemName", ""),
-                    price_cny=float(lst.get("price", 0)),
+                    price_usd=float(lst.get("price", 0)),
                     seller_id=seller_info.get("userId"),
                     delivery=int(lst.get("delivery", 0)),
                     accept_bargain=bool(lst.get("acceptBargain", 0)),

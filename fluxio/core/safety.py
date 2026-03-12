@@ -1,6 +1,7 @@
 """Риск-менеджмент и защитные лимиты.
 
 Проверки перед каждой покупкой (SPEC.md раздел 12).
+Все цены и лимиты — в USD (CS2DT — основная площадка).
 """
 
 from __future__ import annotations
@@ -8,7 +9,7 @@ from __future__ import annotations
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from fluxio.api.c5game_client import C5GameClient
+from fluxio.api.cs2dt_client import CS2DTClient
 from fluxio.config import config
 from fluxio.db.repository import get_same_item_count_24h, get_today_spent, is_product_purchased
 
@@ -25,31 +26,31 @@ class SafetyCheck:
 
 
 async def check_balance(
-    c5_client: C5GameClient,
+    cs2dt_client: CS2DTClient,
     item_price: float,
 ) -> SafetyCheck:
-    """Проверить достаточность баланса.
+    """Проверить достаточность баланса (USD).
 
     - Баланс >= цена предмета
-    - Баланс >= stop_balance_cny (иначе — остановка бота)
+    - Баланс >= stop_balance_usd
     """
     try:
-        data = await c5_client.get_balance()
-        balance = float(data.get("balance", 0))
+        data = await cs2dt_client.get_balance()
+        balance = float(data.get("data", 0))
     except Exception as e:
         logger.error(f"Ошибка получения баланса: {e}")
         return SafetyCheck(False, f"Не удалось получить баланс: {e}")
 
-    if balance < config.trading.stop_balance_cny:
+    if balance < config.trading.stop_balance_usd:
         msg = (
-            f"Баланс {balance:.2f} CNY ниже порога остановки "
-            f"({config.trading.stop_balance_cny:.2f} CNY)"
+            f"Баланс ${balance:.2f} ниже порога остановки "
+            f"(${config.trading.stop_balance_usd:.2f})"
         )
         logger.warning(msg)
         return SafetyCheck(False, msg)
 
     if balance < item_price:
-        msg = f"Недостаточно средств: баланс {balance:.2f} CNY, цена {item_price:.2f} CNY"
+        msg = f"Недостаточно средств: баланс ${balance:.2f}, цена ${item_price:.2f}"
         logger.info(msg)
         return SafetyCheck(False, msg)
 
@@ -57,14 +58,15 @@ async def check_balance(
 
 
 async def check_daily_limit(session: AsyncSession, item_price: float) -> SafetyCheck:
-    """Проверить дневной лимит трат."""
+    """Проверить дневной лимит трат (USD)."""
+    daily_limit = config.trading.daily_limit_usd
     spent_today = await get_today_spent(session)
-    remaining = config.trading.daily_limit_cny - spent_today
+    remaining = daily_limit - spent_today
 
-    if spent_today + item_price > config.trading.daily_limit_cny:
+    if spent_today + item_price > daily_limit:
         msg = (
-            f"Дневной лимит: потрачено {spent_today:.2f} CNY из "
-            f"{config.trading.daily_limit_cny:.2f} CNY, осталось {remaining:.2f} CNY"
+            f"Дневной лимит: потрачено ${spent_today:.2f} из "
+            f"${daily_limit:.2f}, осталось ${remaining:.2f}"
         )
         logger.warning(msg)
         return SafetyCheck(False, msg)
@@ -99,13 +101,9 @@ async def check_idempotency(
     return SafetyCheck(True)
 
 
-async def check_price_range(price_cny: float) -> SafetyCheck:
-    """Проверить что цена в допустимом диапазоне (конвертация USD конфига → CNY)."""
-    usd_to_cny = config.fees.usd_to_cny_rate
-    min_price_cny = config.trading.min_price_usd * usd_to_cny
-    max_price_cny = config.trading.max_price_usd * usd_to_cny
-    if not (min_price_cny <= price_cny <= max_price_cny):
-        price_usd = price_cny / usd_to_cny
+async def check_price_range(price_usd: float) -> SafetyCheck:
+    """Проверить что цена в допустимом диапазоне (USD)."""
+    if not (config.trading.min_price_usd <= price_usd <= config.trading.max_price_usd):
         msg = (
             f"Цена ${price_usd:.2f} вне диапазона "
             f"[${config.trading.min_price_usd}, ${config.trading.max_price_usd}]"
@@ -115,11 +113,11 @@ async def check_price_range(price_cny: float) -> SafetyCheck:
 
 
 async def run_all_checks(
-    c5_client: C5GameClient,
+    cs2dt_client: CS2DTClient,
     session: AsyncSession,
     product_id: str,
     market_hash_name: str,
-    price_cny: float,
+    price_usd: float,
 ) -> SafetyCheck:
     """Выполнить все проверки безопасности перед покупкой.
 
@@ -128,10 +126,10 @@ async def run_all_checks(
     """
     checks = [
         ("Идемпотентность", await check_idempotency(session, product_id)),
-        ("Диапазон цены", await check_price_range(price_cny)),
+        ("Диапазон цены", await check_price_range(price_usd)),
         ("Лимит одинаковых", await check_same_item_limit(session, market_hash_name)),
-        ("Дневной лимит", await check_daily_limit(session, price_cny)),
-        ("Баланс", await check_balance(c5_client, price_cny)),
+        ("Дневной лимит", await check_daily_limit(session, price_usd)),
+        ("Баланс", await check_balance(cs2dt_client, price_usd)),
     ]
 
     for name, check in checks:

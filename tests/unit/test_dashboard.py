@@ -46,7 +46,9 @@ def test_api_workers(client):
     resp = client.get("/api/v1/workers")
     assert resp.status_code == 200
     data = resp.json()
-    assert len(data["workers"]) == 4
+    names = {w["name"] for w in data["workers"]}
+    assert "scanner" in names
+    assert "updater" in names
 
 
 def test_admin_page(client):

@@ -49,7 +49,7 @@ async def save_purchase(
     session: AsyncSession,
     product_id: str,
     market_hash_name: str,
-    price_cny: float,
+    price_usd: float,
     status: str = "pending",
     steam_price_usd: float | None = None,
     discount_percent: float | None = None,
@@ -62,7 +62,7 @@ async def save_purchase(
         product_id=product_id,
         order_id=order_id,
         market_hash_name=market_hash_name,
-        price_cny=price_cny,
+        price_usd=price_usd,
         steam_price_usd=steam_price_usd,
         discount_percent=discount_percent,
         status=status,
@@ -71,7 +71,7 @@ async def save_purchase(
     )
     session.add(purchase)
     await session.commit()
-    logger.info(f"Покупка сохранена: {market_hash_name} за {price_cny} CNY (статус: {status})")
+    logger.info(f"Покупка сохранена: {market_hash_name} за ${price_usd:.2f} (статус: {status})")
     return purchase
 
 
@@ -79,7 +79,7 @@ async def get_today_spent(session: AsyncSession) -> float:
     """Получить сумму трат за сегодня."""
     today = date.today()
     result = await session.execute(
-        select(func.coalesce(func.sum(Purchase.price_cny), 0))
+        select(func.coalesce(func.sum(Purchase.price_usd), 0))
         .where(Purchase.dry_run == False)
         .where(Purchase.status.in_(["pending", "success"]))
         .where(func.date(Purchase.purchased_at) == today)
@@ -240,7 +240,7 @@ async def update_daily_stats(
     purchases_result = await session.execute(
         select(
             func.count().label("count"),
-            func.coalesce(func.sum(Purchase.price_cny), 0).label("spent"),
+            func.coalesce(func.sum(Purchase.price_usd), 0).label("spent"),
             func.coalesce(func.sum(Purchase.steam_price_usd), 0).label("value"),
         )
         .where(Purchase.dry_run == False)
@@ -254,9 +254,9 @@ async def update_daily_stats(
         session.add(stat)
 
     stat.items_purchased = row.count
-    stat.total_spent_cny = float(row.spent)
+    stat.total_spent_usd = float(row.spent)
     stat.potential_value_usd = float(row.value)
-    stat.potential_profit_usd = float(row.value) - float(row.spent) / config.fees.usd_to_cny_rate
+    stat.potential_profit_usd = float(row.value) - float(row.spent)
 
     await session.commit()
     return stat
@@ -282,7 +282,7 @@ async def upsert_item(
     quantity: int = 0,
     auto_deliver_quantity: int = 0,
     buy_type: str = "normal",
-    min_price_cny: float | None = None,
+    min_price_usd_market: float | None = None,
     listings_count: int = 0,
     steam_price_usd: float | None = None,
     steam_volume_24h: int | None = None,
@@ -310,7 +310,7 @@ async def upsert_item(
             quantity=quantity,
             auto_deliver_quantity=auto_deliver_quantity,
             buy_type=buy_type,
-            min_price_cny=min_price_cny,
+            min_price_usd_market=min_price_usd_market,
             listings_count=listings_count,
             steam_price_usd=steam_price_usd,
             steam_volume_24h=steam_volume_24h,
@@ -330,8 +330,8 @@ async def upsert_item(
         item.quantity = quantity
         item.auto_deliver_quantity = auto_deliver_quantity
         item.buy_type = buy_type
-        if min_price_cny is not None:
-            item.min_price_cny = min_price_cny
+        if min_price_usd_market is not None:
+            item.min_price_usd_market = min_price_usd_market
         item.listings_count = listings_count
         if hero:
             item.hero = hero
@@ -366,7 +366,7 @@ async def upsert_sale_listing(
     c5_id: str,
     market_hash_name: str,
     item_name: str,
-    price_cny: float,
+    price_usd: float,
     seller_id: str | None = None,
     delivery: int = 0,
     accept_bargain: bool = False,
@@ -384,7 +384,7 @@ async def upsert_sale_listing(
             c5_id=c5_id,
             market_hash_name=market_hash_name,
             item_name=item_name,
-            price_cny=price_cny,
+            price_usd=price_usd,
             seller_id=seller_id,
             delivery=delivery,
             accept_bargain=accept_bargain,
@@ -394,7 +394,7 @@ async def upsert_sale_listing(
         )
         session.add(listing)
     else:
-        listing.price_cny = price_cny
+        listing.price_usd = price_usd
         listing.is_active = True
         listing.scanned_at = now
         if raw_data is not None:
@@ -436,9 +436,9 @@ async def get_active_listings(
     """Получить активные ордера, опционально фильтруя по цене."""
     q = select(SaleListing).where(SaleListing.is_active == True)
     if min_price is not None:
-        q = q.where(SaleListing.price_cny >= min_price)
+        q = q.where(SaleListing.price_usd >= min_price)
     if max_price is not None:
-        q = q.where(SaleListing.price_cny <= max_price)
-    q = q.order_by(SaleListing.price_cny)
+        q = q.where(SaleListing.price_usd <= max_price)
+    q = q.order_by(SaleListing.price_usd)
     result = await session.execute(q)
     return result.scalars().all()

@@ -9,9 +9,8 @@
 6. Антиманипуляция: не на искусственном бусте
 7. Whitelist (если включён)
 
-Все сравнения ведутся в USD.
-C5Game цены (CNY) конвертируются через fees.usd_to_cny_rate.
-CS2DT цены уже в USD — конвертация не нужна.
+Все цены и сравнения — в USD.
+CS2DT — основная площадка, цены уже в USD.
 """
 
 from __future__ import annotations
@@ -48,14 +47,6 @@ class ProfitAnalyzer:
                 if name:
                     self._whitelist_names[name] = max_price
 
-    def _to_usd(self, price_cny: float) -> float:
-        """Конвертировать цену из CNY в USD."""
-        rate = config.fees.usd_to_cny_rate
-        if rate <= 0:
-            logger.error(f"Невалидный usd_to_cny_rate: {rate}, используется 7.25")
-            rate = 7.25
-        return price_cny / rate
-
     def analyze(self, item: MarketItem) -> AnalysisResult:
         """Проверить предмет на выгодность.
 
@@ -63,9 +54,7 @@ class ProfitAnalyzer:
             AnalysisResult с решением и причиной.
         """
         name = item.market_hash_name
-
-        # Конвертируем цену предмета (C5Game CNY) в USD
-        item_price_usd = self._to_usd(item.price_cny)
+        item_price_usd = item.price_usd
 
         # 1. Есть ли эталонная цена Steam?
         if item.steam_price is None:
@@ -75,7 +64,7 @@ class ProfitAnalyzer:
         if not steam_price_usd or steam_price_usd <= 0:
             return AnalysisResult(False, "цена Steam <= 0", item)
 
-        # 2. Дисконт (сравнение в USD)
+        # 2. Дисконт (всё в USD)
         discount = (steam_price_usd - item_price_usd) / steam_price_usd * 100
         min_discount = config.trading.min_discount_percent
 
@@ -110,7 +99,7 @@ class ProfitAnalyzer:
                 item_price_usd=item_price_usd,
             )
 
-        # 4. Диапазон цены (в USD)
+        # 4. Диапазон цены (USD)
         if not (config.trading.min_price_usd <= item_price_usd <= config.trading.max_price_usd):
             return AnalysisResult(
                 False,
@@ -155,7 +144,7 @@ class ProfitAnalyzer:
                     item_price_usd=item_price_usd,
                 )
 
-        # 7. Антиманипуляция (упрощённая — без исторических данных C5Game)
+        # 7. Антиманипуляция (упрощённая — без исторических данных)
         # Полная проверка требует price_history в БД (Фаза 3+)
 
         # Все проверки пройдены

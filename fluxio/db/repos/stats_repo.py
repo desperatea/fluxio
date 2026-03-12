@@ -28,7 +28,7 @@ class StatsRepository:
         purchases_result = await self._session.execute(
             select(
                 func.count().label("count"),
-                func.coalesce(func.sum(Purchase.price_cny), 0).label("spent"),
+                func.coalesce(func.sum(Purchase.price_usd), 0).label("spent"),
                 func.coalesce(func.sum(Purchase.steam_price_usd), 0).label("value"),
             )
             .where(Purchase.dry_run == False)
@@ -42,7 +42,7 @@ class StatsRepository:
             self._session.add(stat)
 
         stat.items_purchased = row.count
-        stat.total_spent_cny = float(row.spent)
+        stat.total_spent_usd = float(row.spent)
         stat.potential_value_usd = float(row.value)
         stat.potential_profit_usd = float(row.value) - float(row.spent)
 

@@ -34,7 +34,7 @@ class PurchaseRepository:
             product_id=product_id,
             order_id=order_id,
             market_hash_name=market_hash_name,
-            price_cny=price_usd,  # Поле price_cny используется как price_usd
+            price_usd=price_usd,
             steam_price_usd=steam_price_usd,
             discount_percent=discount_percent,
             status=status,
@@ -58,7 +58,7 @@ class PurchaseRepository:
         """Получить сумму трат за сегодня."""
         today = date.today()
         result = await self._session.execute(
-            select(func.coalesce(func.sum(Purchase.price_cny), 0))
+            select(func.coalesce(func.sum(Purchase.price_usd), 0))
             .where(Purchase.dry_run == False)
             .where(Purchase.status.in_(["pending", "success"]))
             .where(func.date(Purchase.purchased_at) == today)

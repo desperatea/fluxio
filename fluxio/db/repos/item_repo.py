@@ -76,7 +76,7 @@ class ItemRepository:
         c5_id: str,
         market_hash_name: str,
         item_name: str,
-        price_cny: float,
+        price_usd: float,
         **kwargs: Any,
     ) -> SaleListing:
         """Создать или обновить ордер на продажу."""
@@ -91,14 +91,14 @@ class ItemRepository:
                 c5_id=c5_id,
                 market_hash_name=market_hash_name,
                 item_name=item_name,
-                price_cny=price_cny,
+                price_usd=price_usd,
                 is_active=True,
                 scanned_at=now,
                 **kwargs,
             )
             self._session.add(listing)
         else:
-            listing.price_cny = price_cny
+            listing.price_usd = price_usd
             listing.is_active = True
             listing.scanned_at = now
             for key, value in kwargs.items():
@@ -130,9 +130,9 @@ class ItemRepository:
         """Получить активные ордера, опционально фильтруя по цене."""
         q = select(SaleListing).where(SaleListing.is_active == True)
         if min_price is not None:
-            q = q.where(SaleListing.price_cny >= min_price)
+            q = q.where(SaleListing.price_usd >= min_price)
         if max_price is not None:
-            q = q.where(SaleListing.price_cny <= max_price)
-        q = q.order_by(SaleListing.price_cny)
+            q = q.where(SaleListing.price_usd <= max_price)
+        q = q.order_by(SaleListing.price_usd)
         result = await self._session.execute(q)
         return result.scalars().all()

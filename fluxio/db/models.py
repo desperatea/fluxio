@@ -59,7 +59,7 @@ class Purchase(Base):
     product_id: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
     order_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     market_hash_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    price_cny: Mapped[float] = mapped_column(Numeric(10, 4), nullable=False)
+    price_usd: Mapped[float] = mapped_column(Numeric(10, 4), nullable=False)
     steam_price_usd: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
     discount_percent: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)
     status: Mapped[str] = mapped_column(String(50), nullable=False)  # pending|success|failed|cancelled|unknown
@@ -96,7 +96,7 @@ class Watchlist(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     market_hash_name: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
-    max_price_cny: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    max_price_usd: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     added_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -156,7 +156,7 @@ class DailyStat(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     date: Mapped[date] = mapped_column(Date, nullable=False, unique=True)
     items_purchased: Mapped[int] = mapped_column(Integer, default=0)
-    total_spent_cny: Mapped[float] = mapped_column(Numeric(10, 4), default=0)
+    total_spent_usd: Mapped[float] = mapped_column(Numeric(10, 4), default=0)
     potential_value_usd: Mapped[float] = mapped_column(Numeric(10, 4), default=0)
     potential_profit_usd: Mapped[float] = mapped_column(Numeric(10, 4), default=0)
 
@@ -183,11 +183,14 @@ class Item(Base):
     auto_deliver_quantity: Mapped[int] = mapped_column(Integer, default=0)
     # Тип покупки: "normal" | "quick" | "both"
     buy_type: Mapped[str] = mapped_column(String(20), nullable=False, default="normal")
-    # Старые поля (совместимость)
-    min_price_cny: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    # Минимальная цена на площадке (USD)
+    min_price_usd_market: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
     listings_count: Mapped[int] = mapped_column(Integer, default=0)
     steam_price_usd: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
     steam_volume_24h: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    steam_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     first_seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -196,14 +199,15 @@ class Item(Base):
     )
 
     __table_args__ = (
-        Index("idx_items_min_price", "min_price_cny"),
+        Index("idx_items_min_price", "min_price_usd_market"),
         Index("idx_items_price_usd", "price_usd"),
         Index("idx_items_buy_type", "buy_type"),
+        Index("idx_items_steam_updated", "steam_updated_at"),
     )
 
 
 class SaleListing(Base):
-    """Ордер на продажу на C5Game, подходящий под критерии по цене."""
+    """Ордер на продажу на площадке, подходящий под критерии по цене."""
 
     __tablename__ = "sale_listings"
 
@@ -211,7 +215,7 @@ class SaleListing(Base):
     c5_id: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
     market_hash_name: Mapped[str] = mapped_column(String(255), nullable=False)
     item_name: Mapped[str] = mapped_column(String(500), nullable=False)
-    price_cny: Mapped[float] = mapped_column(Numeric(10, 4), nullable=False)
+    price_usd: Mapped[float] = mapped_column(Numeric(10, 4), nullable=False)
     seller_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     delivery: Mapped[int] = mapped_column(Integer, default=0)
     accept_bargain: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -223,7 +227,7 @@ class SaleListing(Base):
 
     __table_args__ = (
         Index("idx_listings_hash_name", "market_hash_name"),
-        Index("idx_listings_price", "price_cny"),
+        Index("idx_listings_price", "price_usd"),
         Index("idx_listings_active", "is_active"),
     )
 

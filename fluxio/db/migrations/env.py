@@ -16,8 +16,17 @@ from fluxio.db.models import Base
 
 config = context.config
 
-# Переопределяем URL из переменных окружения если задана
+# Переопределяем URL из переменных окружения
 db_url = os.getenv("DATABASE_URL")
+if not db_url:
+    # Собираем URL из отдельных POSTGRES_* переменных
+    user = os.getenv("POSTGRES_USER")
+    password = os.getenv("POSTGRES_PASSWORD")
+    host = os.getenv("POSTGRES_HOST")
+    port = os.getenv("POSTGRES_PORT", "5432")
+    db = os.getenv("POSTGRES_DB")
+    if user and password and host and db:
+        db_url = f"postgresql://{user}:{password}@{host}:{port}/{db}"
 if db_url:
     config.set_main_option("sqlalchemy.url", db_url)
 

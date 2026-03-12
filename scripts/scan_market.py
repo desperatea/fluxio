@@ -38,7 +38,7 @@ async def main() -> None:
     try:
         # Баланс для проверки подключения
         balance = await c5.get_balance()
-        logger.info(f"Баланс: {balance.get('balance', '?')} CNY")
+        logger.info(f"Баланс: ${balance.get('balance', '?')}")
 
         # Скан рынка
         scanner = MarketScanner(c5)
@@ -52,7 +52,7 @@ async def main() -> None:
             for item in items:
                 logger.info(
                     f"  {item.market_hash_name}: "
-                    f"мин.цена={item.min_price_cny} CNY, "
+                    f"мин.цена=${item.min_price_usd_market}, "
                     f"ордеров={item.listings_count}, "
                     f"герой={item.hero}"
                 )
@@ -62,7 +62,7 @@ async def main() -> None:
             for lst in listings:
                 logger.info(
                     f"  [{lst.c5_id}] {lst.market_hash_name}: "
-                    f"{lst.price_cny} CNY, "
+                    f"${lst.price_usd}, "
                     f"доставка={lst.delivery}"
                 )
 
