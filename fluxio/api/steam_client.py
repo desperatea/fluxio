@@ -65,11 +65,16 @@ class SteamClient:
         # Прокси для обхода Steam rate limit — ротация между несколькими
         self._proxy_urls: list[str | None] = []
         self._proxy_index = 0
+        # Счётчик 429 ошибок по каждому каналу (индекс → количество)
+        self._proxy_429_counts: dict[int, int] = {}
+        # Путь к файлу прокси (для перезаписи после валидации)
+        self._proxy_file: str | None = None
+        # Маппинг proxy_url → оригинальная строка из файла
+        self._proxy_raw_lines: dict[str, str] = {}
 
-        # 1. Загружаем прокси из файла (proxy.txt.txt или STEAM_PROXY_FILE)
+        # 1. Загружаем прокси из файла
         proxy_file = os.getenv("STEAM_PROXY_FILE", "").strip("'\"")
         if not proxy_file:
-            # Ищем proxy.txt.txt в корне проекта
             from fluxio.config import PROJECT_ROOT
             for candidate in ("proxy.txt.txt", "proxy.txt", "proxies.txt"):
                 path = PROJECT_ROOT / candidate
@@ -78,14 +83,16 @@ class SteamClient:
                     break
 
         if proxy_file and os.path.isfile(proxy_file):
+            self._proxy_file = proxy_file
             with open(proxy_file, "r", encoding="utf-8") as f:
                 for line in f:
-                    line = line.strip()
-                    if not line:
+                    raw_line = line.strip()
+                    if not raw_line:
                         continue
-                    proxy_url = self._parse_proxy(line)
+                    proxy_url = self._parse_proxy(raw_line)
                     if proxy_url:
                         self._proxy_urls.append(proxy_url)
+                        self._proxy_raw_lines[proxy_url] = raw_line
             logger.info(f"Загружено {len(self._proxy_urls)} прокси из {proxy_file}")
 
         # 2. Дополняем прокси из .env (если файл не найден или пуст)
@@ -103,8 +110,16 @@ class SteamClient:
                         seen_hosts.add(host_port)
                         self._proxy_urls.append(proxy_url)
 
-        # Прямое подключение тоже как канал
-        self._proxy_urls.append(None)
+        # Каналы будут инициализированы в _init_channels()
+        self._init_channels()
+
+    def _init_channels(self) -> None:
+        """Инициализировать каналы, rate limiters и семафор по текущему списку прокси."""
+        # Прямое подключение тоже как канал (всегда последний)
+        if self._proxy_urls and self._proxy_urls[-1] is None:
+            pass  # direct уже добавлен
+        else:
+            self._proxy_urls.append(None)
 
         # Для обратной совместимости
         self._proxy_url = self._proxy_urls[0] if self._proxy_urls else None
@@ -113,22 +128,134 @@ class SteamClient:
         self._sessions = [None] * len(self._proxy_urls)
 
         # Отдельный rate limiter на каждый прокси/канал
-        # Если много каналов (файл прокси) — можно быстрее на канал
         channel_count = len(self._proxy_urls)
-        rate_per_channel = 0.33 if channel_count > 10 else _STEAM_RATE  # 1 req/3s vs 1/5s
+        rate_per_channel = 0.33 if channel_count > 10 else _STEAM_RATE
         self._proxy_rate_limiters = [
             TokenBucketRateLimiter(rate=rate_per_channel, burst=_STEAM_BURST, name=f"steam_ch{i}")
             for i in range(channel_count)
         ]
-        # Семафор: ограничиваем параллельность чтобы не перегрузить
-        max_parallel = min(channel_count, 25)
+        # Динамический семафор: параллельность зависит от кол-ва прокси
+        max_parallel = min(channel_count, 50)
         self._semaphore = asyncio.Semaphore(max_parallel)
+        self._proxy_index = 0
+        self._proxy_429_counts = {}
 
         proxy_count = len([p for p in self._proxy_urls if p is not None])
         logger.info(
-            f"Steam: {proxy_count} прокси + direct = {len(self._proxy_urls)} каналов, "
-            f"{len(self._cookie_sets)} наборов cookies"
+            f"Steam: {proxy_count} прокси + direct = {channel_count} каналов, "
+            f"параллельность={max_parallel}, "
+            f"rate={rate_per_channel:.2f} req/s на канал"
         )
+
+    def proxy_stats(self) -> dict[str, Any]:
+        """Статистика прокси для дашборда."""
+        total = len(self._proxy_urls)
+        # Последний канал — direct (без прокси)
+        proxy_count = len([p for p in self._proxy_urls if p is not None])
+        # «Плохие» прокси — каналы с 429 ошибками (порог: >=3)
+        bad_proxies: list[dict[str, Any]] = []
+        for idx, count in sorted(self._proxy_429_counts.items()):
+            if count >= 3:
+                proxy_url = self._proxy_urls[idx] if idx < total else None
+                # Маскируем пароль в URL
+                label = self._mask_proxy(proxy_url) if proxy_url else "direct"
+                bad_proxies.append({"channel": idx, "label": label, "count_429": count})
+        return {
+            "total_proxies": proxy_count,
+            "total_channels": total,
+            "bad_proxies": bad_proxies,
+            "counts_429": dict(self._proxy_429_counts),
+        }
+
+    async def validate_proxies(self) -> None:
+        """Проверить все прокси и удалить нерабочие из файла.
+
+        Делает тестовый запрос через каждый прокси к Steam.
+        Нерабочие прокси удаляются из self._proxy_urls и из файла proxy.txt.
+        После валидации переинициализирует каналы.
+        """
+        if not any(p for p in self._proxy_urls if p is not None):
+            logger.info("Прокси не загружены — валидация пропущена")
+            return
+
+        test_url = (
+            "https://steamcommunity.com/market/priceoverview/"
+            "?appid=570&currency=1"
+            "&market_hash_name=Mann%20Co.%20Supply%20Crate%20Key"
+        )
+        timeout = aiohttp.ClientTimeout(total=15)
+        good_proxies: list[str] = []
+        bad_proxies: list[str] = []
+
+        # Проверяем все прокси параллельно (батчами по 20)
+        proxies_to_check = [p for p in self._proxy_urls if p is not None]
+        logger.info(f"Валидация {len(proxies_to_check)} прокси...")
+
+        sem = asyncio.Semaphore(20)
+
+        async def _check_one(proxy_url: str) -> bool:
+            async with sem:
+                try:
+                    async with aiohttp.ClientSession(timeout=timeout) as sess:
+                        async with sess.get(test_url, proxy=proxy_url) as resp:
+                            # 200 или 429 — прокси работает (429 = rate limit, но соединение есть)
+                            if resp.status in (200, 429):
+                                return True
+                            logger.warning(
+                                f"Прокси {self._mask_proxy(proxy_url)} — HTTP {resp.status}"
+                            )
+                            return False
+                except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
+                    logger.warning(
+                        f"Прокси {self._mask_proxy(proxy_url)} — ошибка: {type(e).__name__}: {e}"
+                    )
+                    return False
+
+        tasks = [_check_one(p) for p in proxies_to_check]
+        results = await asyncio.gather(*tasks)
+
+        for proxy_url, ok in zip(proxies_to_check, results):
+            if ok:
+                good_proxies.append(proxy_url)
+            else:
+                bad_proxies.append(proxy_url)
+
+        logger.info(
+            f"Валидация завершена: {len(good_proxies)} рабочих, "
+            f"{len(bad_proxies)} нерабочих"
+        )
+
+        # Удаляем плохие прокси из файла
+        if bad_proxies and self._proxy_file:
+            bad_raw_lines = {self._proxy_raw_lines.get(p) for p in bad_proxies}
+            try:
+                with open(self._proxy_file, "r", encoding="utf-8") as f:
+                    lines = f.readlines()
+                new_lines = [l for l in lines if l.strip() and l.strip() not in bad_raw_lines]
+                with open(self._proxy_file, "w", encoding="utf-8") as f:
+                    f.writelines(new_lines)
+                logger.info(
+                    f"Удалено {len(bad_proxies)} нерабочих прокси из {self._proxy_file}, "
+                    f"осталось {len(new_lines)} строк"
+                )
+            except OSError as e:
+                logger.error(f"Не удалось обновить файл прокси: {e}")
+
+        # Переинициализируем каналы с рабочими прокси
+        if bad_proxies:
+            # Закрываем старые сессии
+            await self.close()
+            # Убираем direct (None) перед переинициализацией — _init_channels добавит его
+            self._proxy_urls = good_proxies.copy()
+            self._init_channels()
+
+    @staticmethod
+    def _mask_proxy(url: str) -> str:
+        """Маскировать пароль в URL прокси для отображения."""
+        # http://user:password@host:port → host:port
+        if "@" in url:
+            return url.split("@", 1)[1]
+        return url.replace("http://", "").replace("https://", "")
 
     @staticmethod
     def _parse_proxy(raw: str) -> str | None:
@@ -207,16 +334,25 @@ class SteamClient:
         for attempt in range(retries.max_retries + 1):
             retry_delay: float | None = None
 
+            # Быстрый выход если cookies протухли (для pricehistory через direct-канал)
+            if not use_proxy and not self._has_auth:
+                return None
+
             async with self._semaphore:
                 await rate_limiter.acquire()
+
+                # Повторная проверка после ожидания в очереди (race condition fix)
+                if not use_proxy and not self._has_auth:
+                    return None
 
                 try:
                     logger.debug(f"Steam → GET {url[:80]}... (попытка {attempt + 1})")
                     async with session.get(url, proxy=proxy) as resp:
                         if resp.status == 429:
+                            self._proxy_429_counts[ch_idx] = self._proxy_429_counts.get(ch_idx, 0) + 1
                             delay = retries.get_delay(attempt)
                             logger.warning(
-                                f"Steam 429 Rate Limit — ожидание {delay:.0f}с "
+                                f"Steam 429 Rate Limit (канал {ch_idx}) — ожидание {delay:.0f}с "
                                 f"(попытка {attempt + 1})"
                             )
                             if attempt < retries.max_retries:

@@ -2,7 +2,7 @@
 
 Алгоритм одного цикла:
 1. ZPOPMAX steam:update_queue → батч предметов с наивысшим приоритетом
-2. Для каждого предмета:
+2. Для каждого предмета (параллельно через asyncio.gather):
    a. Проверить кэш steam:price:{name} (TTL 30 мин) — если свежий, пропустить
    b. Запросить Steam get_median_price()
    c. Закэшировать в Redis с TTL 30 мин
@@ -12,7 +12,7 @@
       иначе: SREM arb:candidates
 3. Если очередь пуста — пауза 30с и повтор
 
-Скорость: ~1 запрос Steam / 5с (rate limit встроен в SteamClient).
+Размер батча и параллельность — динамические, зависят от кол-ва прокси.
 """
 
 from __future__ import annotations
@@ -36,8 +36,8 @@ from fluxio.utils.redis_client import (
     get_redis,
 )
 
-# Кол-во предметов, вытаскиваемых из очереди за раз
-BATCH_SIZE = 10
+# Минимальный размер батча (если мало прокси)
+_MIN_BATCH = 10
 # Пауза если очередь пуста
 EMPTY_QUEUE_SLEEP = 30
 
@@ -46,6 +46,7 @@ class UpdaterWorker(BaseWorker):
     """Обновляет Steam-цены из Redis-очереди.
 
     Запускается как asyncio task через asyncio.create_task(updater.run()).
+    Размер батча динамический — равен кол-ву прокси-каналов.
     """
 
     def __init__(self, steam_client: SteamClient) -> None:
@@ -53,12 +54,19 @@ class UpdaterWorker(BaseWorker):
         super().__init__("updater", interval_seconds=0)
         self._steam = steam_client
 
-    async def run_cycle(self) -> None:
-        """Один цикл: вытащить батч из очереди → обновить Steam цены."""
-        redis = await get_redis()
+    @property
+    def _batch_size(self) -> int:
+        """Динамический размер батча — по кол-ву доступных каналов."""
+        channels = len(self._steam._proxy_urls)
+        return max(channels, _MIN_BATCH)
 
-        # ZPOPMAX: забрать BATCH_SIZE элементов с наивысшим приоритетом
-        raw_batch = await redis.zpopmax(KEY_UPDATE_QUEUE, count=BATCH_SIZE)
+    async def run_cycle(self) -> None:
+        """Один цикл: вытащить батч из очереди → обновить Steam цены параллельно."""
+        redis = await get_redis()
+        batch_size = self._batch_size
+
+        # ZPOPMAX: забрать batch_size элементов с наивысшим приоритетом
+        raw_batch = await redis.zpopmax(KEY_UPDATE_QUEUE, count=batch_size)
 
         if not raw_batch:
             # Очередь пуста — пауза
@@ -66,22 +74,32 @@ class UpdaterWorker(BaseWorker):
             await asyncio.sleep(EMPTY_QUEUE_SLEEP)
             return
 
-        logger.info(f"Updater: обрабатываю {len(raw_batch)} предметов из очереди")
+        logger.info(f"Updater: обрабатываю {len(raw_batch)} предметов параллельно (каналов: {batch_size})")
 
-        # raw_batch: список пар (member, score) при decode_responses=True
-        for member, score in raw_batch:
-            hash_name = member if isinstance(member, str) else member.decode("utf-8")
+        # Параллельная обработка всего батча
+        async def _safe_update(hash_name: str) -> bool:
+            """Обновить один предмет, перехватывая ошибки."""
             try:
                 await self._update_item(hash_name, redis)
-                self._status.items_processed += 1
+                return True
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 logger.error(f"Updater: ошибка обновления [{hash_name}]: {e}")
+                return False
+
+        names = [
+            member if isinstance(member, str) else member.decode("utf-8")
+            for member, _score in raw_batch
+        ]
+
+        results = await asyncio.gather(*[_safe_update(n) for n in names])
+        ok_count = sum(1 for r in results if r)
+        self._status.items_processed += ok_count
 
         queue_len = await redis.zcard(KEY_UPDATE_QUEUE)
         logger.info(
-            f"Updater: батч обработан, "
+            f"Updater: батч {ok_count}/{len(names)} обработан, "
             f"в очереди осталось: {queue_len}"
         )
 

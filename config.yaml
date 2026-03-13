@@ -1,12 +1,12 @@
 trading:
-  min_discount_percent: 15        # Минимальный дисконт к эталону (%)
-  min_price_usd: 0.10             # Минимальная цена предмета (USD)
-  max_price_usd: 5.00             # Максимальная цена предмета (USD)
-  max_single_purchase_usd: 5.00   # Макс. бюджет на одну покупку (USD)
+  min_discount_percent: 45      # Минимальный дисконт к эталону (%)
+  min_price_usd: 0.04            # Минимальная цена предмета (USD)
+  max_price_usd: 1            # Максимальная цена предмета (USD)
+  max_single_purchase_usd: 1  # Макс. бюджет на одну покупку (USD)
   daily_limit_usd: 100.0          # Дневной лимит трат (USD)
   stop_balance_usd: 10.0          # Остановить при остатке ниже (USD)
-  max_same_item_count: 3          # Макс. штук одного предмета за 24ч
-  min_sales_volume_7d: 10         # Мин. продаж за 7 дней (ликвидность)
+  max_same_item_count: 15         # Макс. штук одного предмета за 24ч
+  min_sales_volume_7d: 5      # Мин. продаж за 7 дней (ликвидность)
   dry_run: true                   # true = симуляция без реальных покупок
   semi_auto: false                # true = подтверждение покупки через Telegram
 
@@ -14,7 +14,7 @@ fees:
   steam_fee_percent: 13.0         # Комиссия Steam Market
   cs2dt_fee_percent: 0.0          # Комиссия CS2DT
   c5game_fee_percent: 2.5         # Комиссия C5Game
-  usd_to_cny_rate: 7.25           # Курс USD/CNY (для конвертации C5Game цен)
+  usd_to_cny_rate: 6.87      # Курс USD/CNY (для конвертации C5Game цен)
 
 monitoring:
   interval_seconds: 300           # Интервал опроса рынка (5 минут)

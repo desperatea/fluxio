@@ -10,6 +10,7 @@ services:
       - POSTGRES_HOST=postgres
     volumes:
       - ./config.yaml:/app/config.yaml:ro
+      - ./proxy.txt:/app/proxy.txt
       - ./logs:/app/logs
       - ./backups:/app/backups
       - ./config_history:/app/config_history

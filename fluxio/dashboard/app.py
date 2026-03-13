@@ -19,6 +19,7 @@ from fluxio.config import config
 from fluxio.services.container import ServiceContainer
 from fluxio.utils.circuit_breaker import CircuitBreaker
 from fluxio.utils.logger import get_log_buffer, subscribe_logs, unsubscribe_logs
+from loguru import logger
 
 # Время запуска
 _started_at = datetime.now(timezone.utc)
@@ -171,7 +172,7 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
             from fluxio.db.session import async_session_factory
             from fluxio.db.unit_of_work import UnitOfWork
             async with UnitOfWork(async_session_factory) as uow:
-                for name in names[:50]:  # Лимит 50 для API
+                for name in names:
                     item = await uow.items.get_by_name(name)
                     if item:
                         steam_p = float(item.steam_price_usd) if item.steam_price_usd else None
@@ -336,6 +337,19 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
 </table>
 </body></html>"""
 
+    @app.post("/api/v1/candidates/clear")
+    async def api_clear_candidates() -> JSONResponse:
+        """Очистить список кандидатов в Redis."""
+        try:
+            from fluxio.utils.redis_client import KEY_CANDIDATES, get_redis
+            redis = await get_redis()
+            count = await redis.scard(KEY_CANDIDATES)
+            await redis.delete(KEY_CANDIDATES)
+            logger.info(f"Список кандидатов очищен ({count} шт.)")
+            return JSONResponse({"cleared": count})
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+
     @app.get("/candidates", response_class=HTMLResponse)
     async def user_candidates() -> str:
         """Текущие кандидаты на арбитраж из Redis."""
@@ -354,22 +368,24 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
                 from fluxio.db.session import async_session_factory
                 from fluxio.db.unit_of_work import UnitOfWork
                 async with UnitOfWork(async_session_factory) as uow:
-                    rows = []
-                    for name in names[:100]:
+                    # Собираем все данные для сортировки
+                    candidate_rows: list[tuple[float, str]] = []
+                    for name in names:
                         item = await uow.items.get_by_name(name)
                         if not item:
                             continue
                         p = float(item.price_usd) if item.price_usd else 0.0
                         sp = float(item.steam_price_usd) if item.steam_price_usd else 0.0
+                        d_val = 0.0
                         discount = ""
                         profit = ""
                         if p > 0 and sp > 0:
                             fee = config.fees.steam_fee_percent / 100
                             net = sp * (1 - fee)
-                            d = (net - p) / net * 100 if net > 0 else 0
-                            discount = f"{d:.1f}%"
+                            d_val = (net - p) / net * 100 if net > 0 else 0
+                            discount = f"{d_val:.1f}%"
                             profit = f"${net - p:.4f}"
-                        rows.append(
+                        row = (
                             f"<tr>"
                             f"<td>{name}</td>"
                             f"<td>${p:.4f}</td>"
@@ -379,7 +395,10 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
                             f"<td>{item.steam_volume_24h or '—'}</td>"
                             f"</tr>"
                         )
-                    rows_html = "".join(rows)
+                        candidate_rows.append((d_val, row))
+                    # Сортировка по дисконту (лучшие сверху)
+                    candidate_rows.sort(key=lambda x: x[0], reverse=True)
+                    rows_html = "".join(r for _, r in candidate_rows)
         except Exception as e:
             rows_html = f"<tr><td colspan='6'>Ошибка: {e}</td></tr>"
 
@@ -389,13 +408,19 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
         return f"""<!DOCTYPE html>
 <html lang="ru">
 <head><meta charset="utf-8"><title>Fluxio — Кандидаты</title>
-<style>{_css()}</style></head>
+<style>{_css()}
+.btn {{ display: inline-block; padding: 8px 16px; border-radius: 4px;
+       border: none; cursor: pointer; font-size: 14px; margin-left: 16px; }}
+.btn-danger {{ background: #3d0000; color: #f44336; border: 1px solid #f44336; }}
+.btn-danger:hover {{ background: #f44336; color: #fff; }}
+</style></head>
 <body>
 <h1>Кандидаты на покупку</h1>
 {_nav("/candidates")}
 <p style="color:#8f98a0">
   Кандидатов: <strong style="color:#4caf50">{total}</strong> |
   В очереди обновления: {queue_len}
+  <button class="btn btn-danger" onclick="clearCandidates()">Очистить список</button>
 </p>
 <table>
 <thead><tr>
@@ -404,6 +429,19 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
 </tr></thead>
 <tbody>{rows_html}</tbody>
 </table>
+<script>
+async function clearCandidates() {{
+  if (!confirm('Очистить всех кандидатов? Новые появятся по мере обновления цен.')) return;
+  const resp = await fetch('/api/v1/candidates/clear', {{method: 'POST'}});
+  const data = await resp.json();
+  if (data.cleared !== undefined) {{
+    alert('Очищено: ' + data.cleared + ' кандидатов');
+    location.reload();
+  }} else {{
+    alert('Ошибка: ' + (data.error || 'неизвестная'));
+  }}
+}}
+</script>
 </body></html>"""
 
     # ─── Purchases ─────────────────────────────────────────────────────────────
@@ -561,6 +599,33 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
         if not workers_html:
             workers_html = '<div class="card"><h2>Воркеры</h2><div class="metric" style="color:#8f98a0">Не инициализированы</div></div>'
 
+        # Прокси статистика
+        proxy_html = ""
+        if _container:
+            from fluxio.api.steam_client import SteamClient as _SteamC
+            if _container.is_initialized(_SteamC):
+                steam = await _container.get(_SteamC)
+                ps = steam.proxy_stats()
+                bad_rows = ""
+                if ps["bad_proxies"]:
+                    bad_rows = "".join(
+                        f'<div class="metric" style="color:#f44336">'
+                        f'ch{bp["channel"]}: {bp["label"]} — {bp["count_429"]}x 429</div>'
+                        for bp in ps["bad_proxies"]
+                    )
+                else:
+                    bad_rows = '<div class="metric" style="color:#4caf50">Нет плохих прокси</div>'
+                total_429 = sum(ps["counts_429"].values())
+                proxy_html = f"""<div class="card">
+                  <h2>Прокси (Steam)</h2>
+                  <div class="metric"><span class="label">Всего прокси:</span> {ps['total_proxies']}</div>
+                  <div class="metric"><span class="label">Каналов:</span> {ps['total_channels']} (прокси + direct)</div>
+                  <div class="metric"><span class="label">Всего 429:</span> {total_429}</div>
+                  <div class="metric"><span class="label">Плохих прокси (≥3x 429):</span>
+                    <span style="color:{'#f44336' if ps['bad_proxies'] else '#4caf50'}">{len(ps['bad_proxies'])}</span></div>
+                  {bad_rows}
+                </div>"""
+
         # Redis метрики
         redis_html = ""
         try:
@@ -600,6 +665,7 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
     <div class="metric"><span class="label">Цена:</span> ${config.trading.min_price_usd} – ${config.trading.max_price_usd}</div>
   </div>
   {cb_html}
+  {proxy_html}
   {redis_html}
   {workers_html}
 </div>

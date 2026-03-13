@@ -99,6 +99,7 @@ class Bot:
 
         cs2dt_client = CS2DTClient()
         steam_client = SteamClient()
+        await steam_client.validate_proxies()
 
         # Воркеры Фазы 2
         from fluxio.core.workers.scanner import ScannerWorker
@@ -108,7 +109,8 @@ class Bot:
         updater = UpdaterWorker(steam_client)
         self._workers = [scanner, updater]
 
-        # Регистрируем воркеры для дашборда
+        # Регистрируем воркеры и клиенты для дашборда
+        self._container.register_instance(SteamClient, steam_client)
         self._container.register_instance(ScannerWorker, scanner)
         self._container.register_instance(UpdaterWorker, updater)
 
