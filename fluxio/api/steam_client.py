@@ -13,6 +13,7 @@ import asyncio
 import os
 import re
 import statistics
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -23,6 +24,19 @@ from loguru import logger
 
 from fluxio.config import config
 from fluxio.utils.rate_limiter import RetryConfig, TokenBucketRateLimiter
+
+
+@dataclass
+class _AuthChannel:
+    """Канал авторизации для pricehistory (куки + выделенный прокси)."""
+
+    cookies: dict[str, str]
+    proxy_url: str | None
+    rate_limiter: TokenBucketRateLimiter
+    session: aiohttp.ClientSession | None = field(default=None, repr=False)
+    has_auth: bool = True
+    fail_count: int = 0
+    label: str = ""
 
 # Steam Market rate limit: ~1 запрос в 5 секунд на канал (консервативно)
 _STEAM_RATE = 0.2
@@ -52,11 +66,40 @@ class SteamClient:
                     cookies["browserid"] = browser_id
                 self._cookie_sets.append(cookies)
 
-        # Основные cookies (первый набор) для pricehistory
-        self._cookies = self._cookie_sets[0] if self._cookie_sets else {}
-        self._has_auth = bool(self._cookies)
-        self._auth_fail_count = 0  # Счётчик неудачных pricehistory (авто-отключение)
-        if not self._has_auth:
+        # Auth-каналы для pricehistory: каждый = (куки + прокси), IP привязан
+        self._auth_channels: list[_AuthChannel] = []
+        self._auth_index = 0
+        for suffix in ("", "2", "3", "4", "5"):
+            login_secure = os.getenv(f"STEAM_LOGIN_SECURE{suffix}", "").strip("'\"")
+            if not login_secure:
+                continue
+            session_id = os.getenv(f"SESSION_ID{suffix}", "").strip("'\"")
+            browser_id = os.getenv(f"BROUSER_ID{suffix}", "").strip("'\"")
+            proxy_raw = os.getenv(f"STEAM_PROXY{suffix}", "").strip("'\"")
+
+            cookies: dict[str, str] = {"steamLoginSecure": login_secure}
+            if session_id:
+                cookies["sessionid"] = session_id
+            if browser_id:
+                cookies["browserid"] = browser_id
+
+            proxy_url = self._parse_proxy(proxy_raw) if proxy_raw else None
+            label = suffix or "1"
+            self._auth_channels.append(_AuthChannel(
+                cookies=cookies,
+                proxy_url=proxy_url,
+                rate_limiter=TokenBucketRateLimiter(
+                    rate=0.2, burst=1, name=f"steam_auth_{label}",
+                ),
+                label=label,
+            ))
+
+        self._has_auth = bool(self._auth_channels)
+        if self._auth_channels:
+            logger.info(
+                f"Steam: {len(self._auth_channels)} auth-каналов для pricehistory"
+            )
+        else:
             logger.warning(
                 "STEAM_LOGIN_SECURE не задан — pricehistory недоступен, "
                 "используется только priceoverview"
@@ -259,12 +302,26 @@ class SteamClient:
 
     @staticmethod
     def _parse_proxy(raw: str) -> str | None:
-        """Преобразовать строку прокси в URL для aiohttp."""
+        """Преобразовать строку прокси в URL для aiohttp.
+
+        Поддерживаемые форматы:
+        - http://user:pass@host:port (уже готовый URL)
+        - host:port:user:password
+        - host:port@user:password
+        - host:port
+        """
         raw = raw.strip("'\"")
         if not raw:
             return None
         if raw.startswith(("http://", "https://", "socks")):
             return raw
+        # Формат host:port@user:password
+        if "@" in raw:
+            host_port, user_pass = raw.split("@", 1)
+            if ":" in host_port and ":" in user_pass:
+                host, port = host_port.rsplit(":", 1)
+                user, password = user_pass.split(":", 1)
+                return f"http://{user}:{password}@{host}:{port}"
         parts = raw.split(":")
         if len(parts) == 4:
             host, port, user, password = parts
@@ -305,11 +362,17 @@ class SteamClient:
         return session
 
     async def close(self) -> None:
-        """Закрыть все HTTP-сессии."""
+        """Закрыть все HTTP-сессии (каналы прокси + auth-каналы)."""
         for i, session in enumerate(self._sessions):
             if session and not session.closed:
                 await session.close()
         self._sessions = [None] * len(self._proxy_urls)
+
+        for ch in self._auth_channels:
+            if ch.session and not ch.session.closed:
+                await ch.session.close()
+            ch.session = None
+
         logger.debug("Steam HTTP-сессии закрыты")
 
     async def _request_json(
@@ -334,16 +397,8 @@ class SteamClient:
         for attempt in range(retries.max_retries + 1):
             retry_delay: float | None = None
 
-            # Быстрый выход если cookies протухли (для pricehistory через direct-канал)
-            if not use_proxy and not self._has_auth:
-                return None
-
             async with self._semaphore:
                 await rate_limiter.acquire()
-
-                # Повторная проверка после ожидания в очереди (race condition fix)
-                if not use_proxy and not self._has_auth:
-                    return None
 
                 try:
                     logger.debug(f"Steam → GET {url[:80]}... (попытка {attempt + 1})")
@@ -540,6 +595,38 @@ class SteamClient:
     # pricehistory — требует steamLoginSecure
     # ──────────────────────────────────────────────────────
 
+    def _next_auth_channel(self) -> _AuthChannel | None:
+        """Выбрать следующий живой auth-канал (round-robin)."""
+        if not self._auth_channels:
+            return None
+        total = len(self._auth_channels)
+        for _ in range(total):
+            idx = self._auth_index % total
+            self._auth_index += 1
+            ch = self._auth_channels[idx]
+            if ch.has_auth:
+                return ch
+        return None
+
+    async def _get_auth_session(self, channel: _AuthChannel) -> aiohttp.ClientSession:
+        """Получить или создать сессию для auth-канала."""
+        if channel.session is None or channel.session.closed:
+            timeout = aiohttp.ClientTimeout(total=30)
+            channel.session = aiohttp.ClientSession(
+                timeout=timeout,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/131.0.0.0 Safari/537.36"
+                    ),
+                    "Accept": "application/json, text/plain, */*",
+                    "Accept-Language": "en-US,en;q=0.9",
+                },
+                cookies=channel.cookies,
+            )
+        return channel.session
+
     async def get_price_history(
         self,
         market_hash_name: str,
@@ -548,19 +635,16 @@ class SteamClient:
     ) -> list[list[Any]] | None:
         """Полная история цен предмета на Steam Market.
 
-        Требует cookie steamLoginSecure.
-
-        Args:
-            market_hash_name: точное имя предмета.
-            app_id: ID игры.
-            currency: 1=USD.
+        Требует cookie steamLoginSecure. Round-robin по auth-каналам
+        (каждый канал = куки + выделенный прокси).
 
         Returns:
             Список [[date_str, price_float, volume_str], ...] или None.
         """
-        if not self._has_auth:
+        channel = self._next_auth_channel()
+        if channel is None:
             logger.debug(
-                f"pricehistory пропущен (нет auth): {market_hash_name}"
+                f"pricehistory пропущен (нет живых auth-каналов): {market_hash_name}"
             )
             return None
 
@@ -569,19 +653,68 @@ class SteamClient:
             f"?appid={app_id}&currency={currency}"
             f"&market_hash_name={url_quote(market_hash_name, safe='')}"
         )
-        # pricehistory требует авторизацию — не через прокси (IP привязан к cookies)
-        data = await self._request_json(url, use_proxy=False)
+
+        session = await self._get_auth_session(channel)
+        await channel.rate_limiter.acquire()
+
+        try:
+            logger.debug(
+                f"Steam pricehistory [{market_hash_name}] "
+                f"через auth-канал {channel.label}"
+            )
+            async with session.get(url, proxy=channel.proxy_url) as resp:
+                if resp.status == 429:
+                    logger.warning(
+                        f"Steam pricehistory 429 (auth-канал {channel.label})"
+                    )
+                    return None
+
+                if resp.status >= 400:
+                    logger.error(
+                        f"Steam pricehistory HTTP {resp.status} "
+                        f"(auth-канал {channel.label})"
+                    )
+                    return None
+
+                ct = resp.content_type or ""
+                if "json" not in ct and "javascript" not in ct:
+                    logger.warning(
+                        f"Steam pricehistory не-JSON ({ct}) — "
+                        f"auth-канал {channel.label}, возможно куки протухли"
+                    )
+                    channel.fail_count += 1
+                    if channel.fail_count >= 3:
+                        channel.has_auth = False
+                        self._has_auth = any(
+                            ch.has_auth for ch in self._auth_channels
+                        )
+                        logger.warning(
+                            f"Auth-канал {channel.label} отключён "
+                            f"(3 подряд ошибки pricehistory)"
+                        )
+                    return None
+
+                data = await resp.json(content_type=None)
+
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+            logger.error(
+                f"Steam pricehistory сетевая ошибка "
+                f"(auth-канал {channel.label}): {e}"
+            )
+            return None
+
         if data and data.get("success"):
-            self._auth_fail_count = 0
+            channel.fail_count = 0
             return data.get("prices", [])
 
-        # Автодетект протухших cookies: 3 подряд неудачи → отключаем pricehistory
-        self._auth_fail_count += 1
-        if self._auth_fail_count >= 3 and self._has_auth:
-            self._has_auth = False
+        # Автодетект протухших cookies
+        channel.fail_count += 1
+        if channel.fail_count >= 3 and channel.has_auth:
+            channel.has_auth = False
+            self._has_auth = any(ch.has_auth for ch in self._auth_channels)
             logger.warning(
-                "Steam cookies протухли (3 подряд ошибки pricehistory) — "
-                "pricehistory отключён, используется только priceoverview"
+                f"Auth-канал {channel.label} отключён "
+                f"(3 подряд ошибки pricehistory, куки протухли?)"
             )
         return None
 
@@ -595,38 +728,56 @@ class SteamClient:
         days: int = 30,
         app_id: int = 570,
     ) -> SteamPriceData | None:
-        """Медианная цена и объём продаж за последние N дней.
+        """Текущая и медианная цена предмета на Steam Market.
 
         Стратегия:
-        1. Если есть auth → pricehistory (полные данные)
-        2. Fallback → priceoverview (только текущие данные)
+        1. Всегда запрашиваем priceoverview — актуальная lowest_price (текущий листинг)
+        2. Если есть auth → pricehistory для точной медианы за N дней
+        3. Если нет auth → медиана из priceoverview
 
         Returns:
             SteamPriceData или None если предмет не найден.
         """
-        # Попробовать pricehistory (полные данные)
-        history = await self.get_price_history(market_hash_name, app_id=app_id)
-        if history:
-            result = self._calc_from_history(history, days)
-            if result:
-                logger.debug(
-                    f"Steam цена [{market_hash_name}]: "
-                    f"медиана=${result.median_price_usd:.4f}, "
-                    f"продаж={result.sales_count} за {days}д"
-                )
-                return result
-
-        # Fallback: priceoverview
+        # 1. Всегда получаем текущую цену (priceoverview)
         overview = await self.get_price_overview(market_hash_name, app_id=app_id)
-        if overview:
-            result = self._parse_overview(overview)
-            if result:
-                logger.debug(
-                    f"Steam цена (overview) [{market_hash_name}]: "
-                    f"медиана=${result.median_price_usd:.4f}, "
-                    f"объём={result.sales_count}/24ч"
-                )
-                return result
+        overview_data = self._parse_overview(overview) if overview else None
+
+        # 2. Пробуем pricehistory для точной медианы за N дней
+        history = await self.get_price_history(market_hash_name, app_id=app_id)
+        history_data = self._calc_from_history(history, days) if history else None
+
+        if overview_data and history_data:
+            # Комбинируем: lowest из overview (актуальный), медиана из history (точная)
+            result = SteamPriceData(
+                median_price_usd=history_data.median_price_usd,
+                lowest_price_usd=overview_data.lowest_price_usd,
+                sales_count=history_data.sales_count,
+                source="combined",
+            )
+            logger.debug(
+                f"Steam цена [{market_hash_name}]: "
+                f"lowest=${result.lowest_price_usd:.4f}, "
+                f"медиана=${result.median_price_usd:.4f}, "
+                f"продаж={result.sales_count} за {days}д"
+            )
+            return result
+
+        if overview_data:
+            logger.debug(
+                f"Steam цена (overview) [{market_hash_name}]: "
+                f"lowest=${overview_data.lowest_price_usd:.4f}, "
+                f"медиана=${overview_data.median_price_usd:.4f}, "
+                f"объём={overview_data.sales_count}/24ч"
+            )
+            return overview_data
+
+        if history_data:
+            logger.debug(
+                f"Steam цена (history) [{market_hash_name}]: "
+                f"медиана=${history_data.median_price_usd:.4f}, "
+                f"продаж={history_data.sales_count} за {days}д"
+            )
+            return history_data
 
         logger.debug(f"Steam: предмет не найден [{market_hash_name}]")
         return None
