@@ -473,12 +473,33 @@ async function clearCandidates() {{
         except Exception as e:
             return JSONResponse({"error": str(e), "purchases": [], "total": 0})
 
+    @app.post("/api/v1/purchases/clear")
+    async def api_clear_purchases() -> JSONResponse:
+        """Удалить все покупки из PostgreSQL."""
+        try:
+            from sqlalchemy import delete
+
+            from fluxio.db.models import Purchase
+            from fluxio.db.session import async_session_factory
+            from fluxio.db.unit_of_work import UnitOfWork
+            async with UnitOfWork(async_session_factory) as uow:
+                result = await uow._session.execute(delete(Purchase))
+                count = result.rowcount
+                await uow.commit()
+            logger.info(f"Все покупки удалены из БД ({count} шт.)")
+            return JSONResponse({"cleared": count})
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+
     @app.get("/purchases", response_class=HTMLResponse)
     async def user_purchases() -> str:
         """Страница истории покупок."""
         rows_html = ""
         total = 0
         total_spent = 0.0
+        total_profit = 0.0
+        dry_count = 0
+        live_count = 0
 
         try:
             from fluxio.db.session import async_session_factory
@@ -486,6 +507,7 @@ async function clearCandidates() {{
             async with UnitOfWork(async_session_factory) as uow:
                 purchases = await uow.purchases.get_all(limit=200)
                 total = len(purchases)
+                fee = config.fees.steam_fee_percent / 100
                 rows = []
                 for p in purchases:
                     price = float(p.price_usd) if p.price_usd else 0
@@ -493,6 +515,15 @@ async function clearCandidates() {{
                     disc = f"{float(p.discount_percent):.1f}%" if p.discount_percent else "—"
                     ts = p.purchased_at.strftime("%Y-%m-%d %H:%M") if p.purchased_at else "—"
                     delivered = p.delivered_at.strftime("%H:%M") if p.delivered_at else "—"
+
+                    # Ожидаемая прибыль
+                    profit = 0.0
+                    profit_str = "—"
+                    if steam > 0 and price > 0:
+                        net_steam = steam * (1 - fee)
+                        profit = net_steam - price
+                        color_p = "#4caf50" if profit > 0 else "#f44336"
+                        profit_str = f'<span style="color:{color_p}">${profit:.4f}</span>'
 
                     # Статус с цветом
                     status_colors = {
@@ -510,13 +541,18 @@ async function clearCandidates() {{
                         f"<td>${price:.4f}</td>"
                         f"<td>${steam:.4f}</td>"
                         f"<td>{disc}</td>"
+                        f"<td>{profit_str}</td>"
                         f"<td><span style='color:{status_color}'>{p.status}</span>{dry_badge}</td>"
                         f"<td>{ts}</td>"
-                        f"<td>{delivered}</td>"
                         f"</tr>"
                     )
-                    if not p.dry_run and p.status in ("success", "pending"):
+                    if p.status in ("success", "pending"):
                         total_spent += price
+                        total_profit += profit
+                        if p.dry_run:
+                            dry_count += 1
+                        else:
+                            live_count += 1
                 rows_html = "".join(rows)
         except Exception as e:
             rows_html = f"<tr><td colspan='7'>Ошибка: {e}</td></tr>"
@@ -524,24 +560,63 @@ async function clearCandidates() {{
         if not rows_html:
             rows_html = "<tr><td colspan='7' style='text-align:center;color:#8f98a0'>Покупок пока нет.</td></tr>"
 
+        profit_color = "#4caf50" if total_profit >= 0 else "#f44336"
+        mode_label = "DRY RUN" if config.trading.dry_run else "LIVE"
+
         return f"""<!DOCTYPE html>
 <html lang="ru">
 <head><meta charset="utf-8"><title>Fluxio — Покупки</title>
-<style>{_css()}</style></head>
+<style>{_css()}
+.stats-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 16px; }}
+.stat-card {{ background: #1b2838; border-radius: 8px; padding: 14px 18px; border: 1px solid #2a475e; }}
+.stat-card .val {{ font-size: 22px; font-weight: 700; margin-top: 4px; }}
+.stat-card .lbl {{ color: #8f98a0; font-size: 13px; }}
+.btn {{ display: inline-block; padding: 8px 16px; border-radius: 4px;
+       border: none; cursor: pointer; font-size: 14px; margin-left: 16px; }}
+.btn-danger {{ background: #3d0000; color: #f44336; border: 1px solid #f44336; }}
+.btn-danger:hover {{ background: #f44336; color: #fff; }}
+</style></head>
 <body>
-<h1>История покупок</h1>
+<h1>Покупки ({mode_label})</h1>
 {_nav("/purchases")}
-<p style="color:#8f98a0">
-  Всего: <strong>{total}</strong> |
-  Потрачено (live): <strong style="color:#ff9800">${total_spent:.2f}</strong>
+<div class="stats-grid">
+  <div class="stat-card">
+    <div class="lbl">Куплено предметов</div>
+    <div class="val" style="color:#66c0f4">{dry_count + live_count}</div>
+    <div class="lbl">dry: {dry_count} | live: {live_count}</div>
+  </div>
+  <div class="stat-card">
+    <div class="lbl">Потрачено</div>
+    <div class="val" style="color:#ff9800">${total_spent:.2f}</div>
+  </div>
+  <div class="stat-card">
+    <div class="lbl">Ожидаемая прибыль</div>
+    <div class="val" style="color:{profit_color}">${total_profit:.2f}</div>
+  </div>
+</div>
+<p>
+  <button class="btn btn-danger" onclick="clearPurchases()">Очистить все покупки</button>
 </p>
 <table>
 <thead><tr>
   <th>Предмет</th><th>Цена</th><th>Steam</th>
-  <th>Дисконт</th><th>Статус</th><th>Дата</th><th>Доставка</th>
+  <th>Дисконт</th><th>Прибыль</th><th>Статус</th><th>Дата</th>
 </tr></thead>
 <tbody>{rows_html}</tbody>
 </table>
+<script>
+async function clearPurchases() {{
+  if (!confirm('Удалить ВСЕ покупки из базы данных? Это действие необратимо.')) return;
+  const resp = await fetch('/api/v1/purchases/clear', {{method: 'POST'}});
+  const data = await resp.json();
+  if (data.cleared !== undefined) {{
+    alert('Удалено: ' + data.cleared + ' покупок');
+    location.reload();
+  }} else {{
+    alert('Ошибка: ' + (data.error || 'неизвестная'));
+  }}
+}}
+</script>
 </body></html>"""
 
     # ─── Admin HTML ────────────────────────────────────────────────────────────
