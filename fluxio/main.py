@@ -82,6 +82,26 @@ class Bot:
                 logger.error(f"Ошибка обновления конфига: {e}")
             await asyncio.sleep(60)
 
+    async def _flush_stale_redis(self) -> None:
+        """Очистить кандидатов и очереди при старте.
+
+        После рестарта старые данные могут быть невалидными —
+        scanner и updater пересоберут их заново.
+        Очередь обогащения (enrich_queue) сохраняется.
+        """
+        from fluxio.utils.redis_client import (
+            KEY_CANDIDATES,
+            KEY_PURCHASED_IDS,
+            KEY_UPDATE_QUEUE,
+        )
+
+        redis = await get_redis()
+        deleted = await redis.delete(KEY_CANDIDATES, KEY_UPDATE_QUEUE, KEY_PURCHASED_IDS)
+        logger.info(
+            f"Очистка Redis при старте: удалено {deleted} ключей "
+            f"({KEY_CANDIDATES}, {KEY_UPDATE_QUEUE}, {KEY_PURCHASED_IDS})"
+        )
+
     async def run(self) -> None:
         """Запуск бота."""
         setup_logging(config.env.log_level)
@@ -92,6 +112,9 @@ class Bot:
 
         self._container = await create_container()
         logger.info("ServiceContainer инициализирован")
+
+        # Очистка Redis: старые кандидаты и очереди могут быть невалидными
+        await self._flush_stale_redis()
 
         # API клиенты
         from fluxio.api.cs2dt_client import CS2DTClient
