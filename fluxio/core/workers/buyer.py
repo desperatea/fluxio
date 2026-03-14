@@ -2,16 +2,12 @@
 
 Алгоритм одного цикла:
 1. SMEMBERS arb:candidates → получить список кандидатов
-2. Для каждого кандидата:
-   a. Загрузить данные из БД (Item + Steam цена)
-   b. Redis SISMEMBER buy:purchased_ids → проверка идемпотентности
-   c. DiscountStrategy.analyze() → решение о покупке
-   d. safety.run_all_checks() → проверки безопасности
-   e. dry_run: полная симуляция (баланс, прибыль) без CS2DT buy() | live: CS2DT buy()
-   f. Сохранить Purchase в БД
-   g. SADD buy:purchased_ids → пометить как куплено
-   h. Pub/Sub → channel:purchases
-3. Обработанные кандидаты → SREM arb:candidates
+2. get_prices_batch(hash_names) → актуальные цены CS2DT (1 API-запрос)
+3. Отфильтровать по наличию и цене
+4. Для каждого выжившего — проверить в БД (steam_price, cs2dt_item_id)
+5. Рассчитать buy_quantity по ликвидности
+6. get_sell_list(cs2dt_item_id) → актуальные лоты
+7. Для каждого лота — safety checks → покупка
 
 Скорость: buyer_interval_seconds (по умолчанию 60с).
 """
@@ -23,68 +19,111 @@ import json
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
+from typing import Any
 
 from loguru import logger
 
 from fluxio.api.cs2dt_client import CS2DTClient
 from fluxio.config import config
 from fluxio.core.safety import SafetyCheck, run_all_checks
-from fluxio.core.strategies.discount import DiscountStrategy
 from fluxio.core.workers.base import BaseWorker
 from fluxio.db.session import async_session_factory
 from fluxio.db.unit_of_work import UnitOfWork
-from fluxio.interfaces.market_client import MarketItem
-from fluxio.interfaces.price_provider import PriceData
 from fluxio.utils.redis_client import (
     CHANNEL_PURCHASES,
     KEY_CANDIDATES,
     KEY_PURCHASED_IDS,
-    KEY_STEAM_PRICE,
     get_redis,
 )
 
-# Максимум кандидатов за один цикл (чтобы не перегружать)
-MAX_CANDIDATES_PER_CYCLE = 10
+# Максимум кандидатов за один цикл
+MAX_CANDIDATES_PER_CYCLE = 200  # лимит get_prices_batch
 
 
 class BuyerWorker(BaseWorker):
-    """Покупает предметы из arb:candidates после проверок безопасности.
-
-    Запускается как asyncio task через asyncio.create_task(buyer.run()).
-    """
+    """Покупает предметы из arb:candidates после проверок безопасности."""
 
     def __init__(self, cs2dt_client: CS2DTClient) -> None:
         interval = config.update_queue.buyer_interval_seconds
         super().__init__("buyer", interval_seconds=interval)
         self._cs2dt = cs2dt_client
-        self._strategy = DiscountStrategy(config)
         self._last_cycle_bought: int = 0
         self._last_cycle_skipped: int = 0
         self._total_bought: int = 0
         self._total_spent_usd: float = 0.0
 
     async def run_cycle(self) -> None:
-        """Один цикл: забрать кандидатов → проверить → купить."""
+        """Один цикл: кандидаты → CS2DT цены → БД → покупка."""
         redis = await get_redis()
 
-        # Получаем кандидатов из Redis
-        candidate_names = list(await redis.smembers(KEY_CANDIDATES))
+        # 1. Получаем кандидатов из Redis
+        raw_names = await redis.smembers(KEY_CANDIDATES)
+        candidate_names = [
+            n if isinstance(n, str) else n.decode("utf-8") for n in raw_names
+        ]
         if not candidate_names:
             logger.debug("Buyer: кандидатов нет, ожидание...")
             return
 
-        # Ограничиваем количество за один цикл
         batch = candidate_names[:MAX_CANDIDATES_PER_CYCLE]
-        logger.info(f"Buyer: обрабатываю {len(batch)} кандидатов из {len(candidate_names)}")
+        logger.info(f"Buyer: {len(batch)} кандидатов, запрашиваю цены CS2DT...")
 
+        # 2. Batch-запрос актуальных цен CS2DT (1 API-вызов)
+        try:
+            cs2dt_prices = await self._cs2dt.get_prices_batch(batch, app_id=self._get_app_id())
+        except Exception as e:
+            logger.error(f"Buyer: ошибка get_prices_batch: {e}")
+            return
+
+        if not cs2dt_prices or not isinstance(cs2dt_prices, list):
+            logger.debug("Buyer: CS2DT вернул пустые цены")
+            return
+
+        # Индексируем по hash_name
+        cs2dt_by_name: dict[str, dict[str, Any]] = {}
+        for item_data in cs2dt_prices:
+            name = item_data.get("marketHashName", "")
+            if name:
+                cs2dt_by_name[name] = item_data
+
+        # 3. Фильтруем: есть на CS2DT, цена в диапазоне, quantity > 0
+        viable: list[tuple[str, float, int]] = []  # (hash_name, cs2dt_price, cs2dt_qty)
+        for hash_name in batch:
+            cs2dt_data = cs2dt_by_name.get(hash_name)
+            if not cs2dt_data:
+                # Нет на CS2DT — убираем из кандидатов
+                await redis.srem(KEY_CANDIDATES, hash_name)
+                continue
+
+            price = float(cs2dt_data.get("price") or 0)
+            qty = int(cs2dt_data.get("quantity") or 0)
+
+            if qty <= 0 or price <= 0:
+                await redis.srem(KEY_CANDIDATES, hash_name)
+                continue
+
+            if not (config.trading.min_price_usd <= price <= config.trading.max_price_usd):
+                continue
+
+            viable.append((hash_name, price, qty))
+
+        if not viable:
+            logger.debug("Buyer: нет предметов с подходящей ценой на CS2DT")
+            return
+
+        logger.info(f"Buyer: {len(viable)} предметов доступны на CS2DT, проверяю БД...")
+
+        # 4. Для каждого — проверяем БД и покупаем
         bought = 0
         skipped = 0
 
-        for hash_name in batch:
+        for hash_name, cs2dt_price, cs2dt_qty in viable:
             try:
-                result = await self._process_candidate(hash_name, redis)
-                if result:
-                    bought += 1
+                count = await self._process_item(
+                    hash_name, cs2dt_price, cs2dt_qty, redis,
+                )
+                if count > 0:
+                    bought += count
                 else:
                     skipped += 1
             except asyncio.CancelledError:
@@ -98,94 +137,181 @@ class BuyerWorker(BaseWorker):
         self._status.items_processed += bought
         logger.info(f"Buyer: цикл завершён — куплено: {bought}, пропущено: {skipped}")
 
-    async def _process_candidate(self, hash_name: str, redis: object) -> bool:
-        """Обработать одного кандидата. Возвращает True если покупка состоялась."""
-        # Загружаем данные предмета из БД
+    async def _process_item(
+        self,
+        hash_name: str,
+        cs2dt_price: float,
+        cs2dt_qty: int,
+        redis: object,
+    ) -> int:
+        """Обработать предмет. Возвращает количество купленных штук."""
         async with UnitOfWork(async_session_factory) as uow:
             item = await uow.items.get_by_name(hash_name)
+
             if item is None:
-                logger.debug(f"Buyer: [{hash_name}] не найден в БД, удаляю из кандидатов")
+                # Нет в БД — нет steam_price, не можем оценить дисконт
+                logger.debug(f"Buyer: [{hash_name}] нет в БД, пропуск")
                 await redis.srem(KEY_CANDIDATES, hash_name)
-                return False
+                return 0
 
-            item_price = float(item.price_usd or 0)
             steam_price = float(item.steam_price_usd or 0)
+            cs2dt_item_id = item.cs2dt_item_id
+            volume_24h = item.steam_volume_24h or 0
 
-            if item_price <= 0 or steam_price <= 0:
-                logger.debug(f"Buyer: [{hash_name}] нет цены, пропуск")
+            if steam_price <= 0:
+                logger.debug(f"Buyer: [{hash_name}] нет Steam цены, пропуск")
                 await redis.srem(KEY_CANDIDATES, hash_name)
-                return False
+                return 0
 
-            # Получаем product_id из CS2DT (item_id хранится в БД)
-            product_id = str(item.item_id) if hasattr(item, "item_id") and item.item_id else None
-            if not product_id:
-                logger.debug(f"Buyer: [{hash_name}] нет item_id, пропуск")
-                return False
+            # Проверяем дисконт по актуальной цене CS2DT
+            fee = config.fees.steam_fee_percent / 100
+            net_steam = steam_price * (1 - fee)
+            discount = (net_steam - cs2dt_price) / net_steam * 100 if net_steam > 0 else 0
 
-            # Redis: быстрая проверка идемпотентности
-            already_bought = await redis.sismember(KEY_PURCHASED_IDS, product_id)
-            if already_bought:
-                logger.debug(f"Buyer: [{hash_name}] уже куплен (Redis), удаляю из кандидатов")
+            if discount < config.trading.min_discount_percent:
+                logger.debug(
+                    f"Buyer: [{hash_name}] дисконт {discount:.1f}% < "
+                    f"{config.trading.min_discount_percent}%, пропуск"
+                )
                 await redis.srem(KEY_CANDIDATES, hash_name)
-                return False
+                return 0
 
-            # Стратегия: анализ
-            market_item = MarketItem(
-                item_id=product_id,
-                product_id=product_id,
-                market_hash_name=hash_name,
-                item_name=item.item_name or hash_name,
-                price=Decimal(str(item_price)),
-                platform="cs2dt",
-                app_id=item.app_id or 570,
-            )
+            if not cs2dt_item_id:
+                logger.debug(f"Buyer: [{hash_name}] нет cs2dt_item_id, пропуск")
+                return 0
 
-            # Получаем volume из Redis кэша или БД
-            volume_24h = item.steam_volume_24h
-            sales_7d = volume_24h * 7 if volume_24h else None
+            # Рассчитываем количество для покупки
+            buy_quantity = self._calc_buy_quantity(volume_24h)
 
-            reference = PriceData(
-                market_hash_name=hash_name,
-                median_price_usd=steam_price,
-                lowest_price_usd=None,
-                volume_24h=volume_24h,
-                buy_order_price_usd=None,
-                sales_7d=sales_7d,
-                updated_at=datetime.now(timezone.utc).isoformat(),
-            )
-
-            analysis = self._strategy.analyze(market_item, reference)
-            if not analysis.should_buy:
-                logger.debug(f"Buyer: [{hash_name}] стратегия отклонила: {analysis.reason}")
-                # Удаляем из кандидатов — Updater добавит обратно если условия изменятся
+            # Сколько уже купили за 24ч
+            already_bought = await uow.purchases.get_same_item_count_24h(hash_name)
+            remaining_allowed = max(0, config.trading.max_same_item_count - already_bought)
+            if remaining_allowed == 0:
+                logger.debug(
+                    f"Buyer: [{hash_name}] лимит достигнут: "
+                    f"{already_bought}/{config.trading.max_same_item_count} за 24ч"
+                )
                 await redis.srem(KEY_CANDIDATES, hash_name)
-                return False
+                return 0
 
-            # Safety checks (используем raw session для legacy safety.py)
-            safety_result = await run_all_checks(
-                cs2dt_client=self._cs2dt,
-                session=uow._session,
-                product_id=product_id,
-                market_hash_name=hash_name,
-                price_usd=item_price,
-            )
-            if not safety_result:
+            buy_quantity = min(buy_quantity, remaining_allowed, cs2dt_qty)
+
+            # Получаем актуальные лоты с CS2DT (сортировка по цене ↑)
+            try:
+                sell_data = await self._cs2dt.get_sell_list(
+                    item_id=cs2dt_item_id,
+                    order_by=2,  # цена по возрастанию
+                    limit=min(buy_quantity * 2, 50),
+                    max_price=str(config.trading.max_price_usd),
+                )
+            except Exception as e:
+                logger.error(f"Buyer: [{hash_name}] ошибка get_sell_list: {e}")
+                return 0
+
+            listings = sell_data.get("list", []) if sell_data else []
+            if not listings:
+                logger.debug(f"Buyer: [{hash_name}] нет лотов на CS2DT")
+                await redis.srem(KEY_CANDIDATES, hash_name)
+                return 0
+
+            # Покупаем лоты последовательно
+            total_bought = 0
+
+            for listing in listings:
+                if total_bought >= buy_quantity:
+                    break
+
+                product_id = str(listing.get("id", ""))
+                listing_price = float(listing.get("price", 0))
+
+                if not product_id or listing_price <= 0:
+                    continue
+
+                if listing_price < config.trading.min_price_usd:
+                    continue
+                if listing_price > config.trading.max_price_usd:
+                    break  # отсортировано по цене, дальше дороже
+
+                listing_discount = (
+                    (net_steam - listing_price) / net_steam * 100 if net_steam > 0 else 0
+                )
+                if listing_discount < config.trading.min_discount_percent:
+                    break  # дальше дисконт только меньше
+
+                # Идемпотентность: Redis (быстро) + PostgreSQL (надёжно)
+                already_in_redis = await redis.sismember(KEY_PURCHASED_IDS, product_id)
+                if already_in_redis:
+                    continue
+                already_in_db = await uow.purchases.exists(product_id)
+                if already_in_db:
+                    # Восстанавливаем Redis из БД
+                    await redis.sadd(KEY_PURCHASED_IDS, product_id)
+                    continue
+
+                # Safety checks
+                safety_result = await run_all_checks(
+                    cs2dt_client=self._cs2dt,
+                    session=uow._session,
+                    product_id=product_id,
+                    market_hash_name=hash_name,
+                    price_usd=listing_price,
+                )
+                if not safety_result:
+                    logger.info(
+                        f"Buyer: [{hash_name}] safety check не пройден: {safety_result.reason}"
+                    )
+                    break  # баланс/лимит исчерпан — стоп
+
+                # === ПОКУПКА ===
+                if config.trading.dry_run:
+                    ok = await self._dry_run_buy(
+                        uow, redis, hash_name, product_id,
+                        listing_price, steam_price, listing_discount,
+                    )
+                else:
+                    ok = await self._live_buy(
+                        uow, redis, hash_name, product_id,
+                        listing_price, steam_price, listing_discount,
+                    )
+
+                if ok:
+                    total_bought += 1
+
+            # Удаляем из кандидатов — Updater добавит обратно при следующем цикле
+            await redis.srem(KEY_CANDIDATES, hash_name)
+
+            if total_bought > 0:
                 logger.info(
-                    f"Buyer: [{hash_name}] safety check не пройден: {safety_result.reason}"
+                    f"Buyer: [{hash_name}] куплено {total_bought} шт "
+                    f"(план: {buy_quantity}, лотов: {len(listings)})"
                 )
-                return False
 
-            # === ПОКУПКА ===
-            if config.trading.dry_run:
-                return await self._dry_run_buy(
-                    uow, redis, hash_name, product_id,
-                    item_price, steam_price, analysis.discount_percent,
-                )
-            else:
-                return await self._live_buy(
-                    uow, redis, hash_name, product_id,
-                    item_price, steam_price, analysis.discount_percent,
-                )
+            return total_bought
+
+    @staticmethod
+    def _calc_buy_quantity(daily_sales: int) -> int:
+        """Рассчитать количество для покупки на основе ликвидности.
+
+        Тиры по дневным продажам в Steam:
+        - >= 50 продаж/день: до daily_sales штук (1 дневной объём)
+        - >= 10 продаж/день: до daily_sales * 0.5 (полдня)
+        - < 10 продаж/день: до min(3, daily_sales)
+        - нет данных: 1 штука
+        """
+        if daily_sales <= 0:
+            return 1
+        if daily_sales >= 50:
+            return max(1, int(daily_sales * 1.0))
+        if daily_sales >= 10:
+            return max(1, int(daily_sales * 0.5))
+        return max(1, min(3, daily_sales))
+
+    def _get_app_id(self) -> int:
+        """Получить app_id первой включённой игры."""
+        for game in config.games:
+            if game.enabled:
+                return game.app_id
+        return 570
 
     async def _dry_run_buy(
         self,
@@ -197,11 +323,7 @@ class BuyerWorker(BaseWorker):
         steam_price_usd: float,
         discount_percent: float,
     ) -> bool:
-        """Симуляция покупки — полный цикл как live, кроме CS2DT buy().
-
-        Проверяет баланс через API, trade_url, считает прибыль,
-        создаёт Purchase (pending → success), генерирует out_trade_no.
-        """
+        """Симуляция покупки — полный цикл как live, кроме CS2DT buy()."""
         out_trade_no = str(uuid.uuid4())
         trade_url = config.env.trade_url
 
@@ -209,7 +331,7 @@ class BuyerWorker(BaseWorker):
             logger.error("Buyer [DRY RUN]: TRADE_URL не задан в .env, покупка невозможна")
             return False
 
-        # Проверяем баланс через API (как в реальном режиме)
+        # Проверяем баланс через API
         try:
             balance_data = await self._cs2dt.get_balance()
             balance = float(balance_data.get("data", 0))
@@ -219,17 +341,15 @@ class BuyerWorker(BaseWorker):
                     f"баланс=${balance:.2f}, нужно=${price_usd:.4f}"
                 )
                 return False
-            logger.debug(f"Buyer [DRY RUN]: баланс=${balance:.2f}")
         except Exception as e:
             logger.warning(f"Buyer [DRY RUN]: ошибка проверки баланса: {e}")
-            # В dry-run продолжаем даже без баланса
 
         # Считаем ожидаемую прибыль
         fee_pct = config.fees.steam_fee_percent / 100
         net_steam = steam_price_usd * (1 - fee_pct)
         expected_profit = net_steam - price_usd
 
-        # Создаём Purchase со статусом pending (как live)
+        # Создаём Purchase
         purchase = await uow.purchases.create(
             product_id=product_id,
             market_hash_name=hash_name,
@@ -241,9 +361,7 @@ class BuyerWorker(BaseWorker):
         )
         await uow.commit()
 
-        # Симулируем успешный ответ CS2DT (без реального вызова)
         simulated_order_id = f"DRY-{out_trade_no[:8]}"
-
         purchase.status = "success"
         purchase.order_id = simulated_order_id
         purchase.api_response = {
@@ -264,11 +382,7 @@ class BuyerWorker(BaseWorker):
             f"ордер={simulated_order_id}"
         )
 
-        # Помечаем как куплено в Redis
         await redis.sadd(KEY_PURCHASED_IDS, product_id)
-        await redis.srem(KEY_CANDIDATES, hash_name)
-
-        # Pub/Sub уведомление
         await self._publish_purchase(redis, hash_name, price_usd, discount_percent, dry_run=True)
 
         self._total_bought += 1
@@ -293,7 +407,6 @@ class BuyerWorker(BaseWorker):
             logger.error("Buyer: TRADE_URL не задан в .env, покупка невозможна")
             return False
 
-        # Создаём запись покупки со статусом pending
         purchase = await uow.purchases.create(
             product_id=product_id,
             market_hash_name=hash_name,
@@ -313,7 +426,6 @@ class BuyerWorker(BaseWorker):
                 max_price=price_usd,
             )
 
-            # Успешная покупка
             order_id = str(result.get("orderId", ""))
             buy_price = float(result.get("buyPrice", price_usd))
             delivery = result.get("delivery", 0)
@@ -323,7 +435,6 @@ class BuyerWorker(BaseWorker):
             purchase.price_usd = buy_price
             purchase.api_response = result
 
-            # Сохраняем активный заказ для трекинга
             if order_id:
                 await uow.purchases.save_active_order(
                     order_id=order_id,
@@ -346,11 +457,7 @@ class BuyerWorker(BaseWorker):
             logger.error(f"Buyer: ошибка покупки [{hash_name}]: {e}")
             return False
 
-        # Помечаем как куплено
         await redis.sadd(KEY_PURCHASED_IDS, product_id)
-        await redis.srem(KEY_CANDIDATES, hash_name)
-
-        # Pub/Sub уведомление
         await self._publish_purchase(redis, hash_name, price_usd, discount_percent, dry_run=False)
 
         self._total_bought += 1

@@ -673,7 +673,7 @@ async function clearCandidates() {{
 
     @app.get("/admin/logs", response_class=HTMLResponse)
     async def admin_logs() -> str:
-        """Страница SSE логов в реальном времени."""
+        """Страница SSE логов с фильтрацией по воркерам."""
         return """<!DOCTYPE html>
 <html lang="ru">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -684,22 +684,43 @@ async function clearCandidates() {{
   h1 { color: #66c0f4; font-family: 'Segoe UI', sans-serif; }
   nav { margin-bottom: 20px; font-family: 'Segoe UI', sans-serif; }
   nav a { color: #66c0f4; margin-right: 16px; text-decoration: none; }
+  .tabs { display: flex; gap: 0; margin-bottom: 12px; font-family: 'Segoe UI', sans-serif; }
+  .tab { padding: 8px 18px; background: #1b2838; border: 1px solid #2a475e; color: #8f98a0;
+         cursor: pointer; font-size: 14px; transition: all 0.15s; user-select: none; }
+  .tab:first-child { border-radius: 6px 0 0 6px; }
+  .tab:last-child { border-radius: 0 6px 6px 0; }
+  .tab:not(:last-child) { border-right: none; }
+  .tab.active { background: #2a475e; color: #66c0f4; font-weight: 600; }
+  .tab:hover:not(.active) { background: #243547; color: #c7d5e0; }
+  .tab .count { font-size: 11px; margin-left: 6px; color: #8f98a0; }
+  .tab.active .count { color: #66c0f4; }
   #logs { background: #1b2838; border: 1px solid #2a475e; border-radius: 8px;
-          padding: 16px; height: 75vh; overflow-y: auto; font-size: 13px; line-height: 1.5; }
+          padding: 16px; height: 72vh; overflow-y: auto; font-size: 13px; line-height: 1.5; }
   .log-line { white-space: pre-wrap; word-break: break-all; }
   .ERROR { color: #f44336; } .WARNING { color: #ff9800; }
   .INFO { color: #4caf50; } .DEBUG { color: #8f98a0; }
-  #status { color: #8f98a0; margin-bottom: 10px; font-family: 'Segoe UI', sans-serif; }
+  #status { color: #8f98a0; margin-bottom: 10px; font-family: 'Segoe UI', sans-serif; font-size: 13px; }
 </style></head>
 <body>
 <h1>Fluxio — Логи</h1>
 <nav><a href="/admin/">← Admin</a><a href="/">User</a></nav>
+<div class="tabs">
+  <div class="tab active" data-filter="all">Все<span class="count" id="cnt-all">0</span></div>
+  <div class="tab" data-filter="scanner">Scanner<span class="count" id="cnt-scanner">0</span></div>
+  <div class="tab" data-filter="updater">Updater<span class="count" id="cnt-updater">0</span></div>
+  <div class="tab" data-filter="buyer">Buyer<span class="count" id="cnt-buyer">0</span></div>
+  <div class="tab" data-filter="other">Другое<span class="count" id="cnt-other">0</span></div>
+</div>
 <div id="status">Подключение...</div>
 <div id="logs"></div>
 <script>
 const logsDiv = document.getElementById('logs');
 const statusDiv = document.getElementById('status');
-let lineCount = 0;
+let activeFilter = 'all';
+const allLines = [];
+const MAX_LINES = 2000;
+const counters = {all: 0, scanner: 0, updater: 0, buyer: 0, other: 0};
+
 function getLogClass(text) {
   if (text.includes('| ERROR |')) return 'ERROR';
   if (text.includes('| WARNING |')) return 'WARNING';
@@ -707,18 +728,78 @@ function getLogClass(text) {
   if (text.includes('| DEBUG |')) return 'DEBUG';
   return '';
 }
+
+function getWorker(text) {
+  if (/\| (scanner|cs2dt_client):/.test(text) || text.includes('Scanner:')) return 'scanner';
+  if (/\| (updater|steam_client):/.test(text) || text.includes('Updater:')) return 'updater';
+  if (/\| (buyer|safety):/.test(text) || text.includes('Buyer')) return 'buyer';
+  return 'other';
+}
+
+function matchesFilter(worker) {
+  return activeFilter === 'all' || activeFilter === worker;
+}
+
+function updateCounters() {
+  for (const k of Object.keys(counters)) {
+    document.getElementById('cnt-' + k).textContent = counters[k];
+  }
+}
+
+function addLine(text) {
+  const worker = getWorker(text);
+  const cls = getLogClass(text);
+  counters.all++;
+  counters[worker]++;
+
+  const entry = {text, worker, cls};
+  allLines.push(entry);
+  if (allLines.length > MAX_LINES) {
+    const removed = allLines.shift();
+    counters.all--;
+    counters[removed.worker]--;
+    if (matchesFilter(removed.worker) && logsDiv.firstChild) {
+      logsDiv.removeChild(logsDiv.firstChild);
+    }
+  }
+
+  if (matchesFilter(worker)) {
+    const div = document.createElement('div');
+    div.className = 'log-line ' + cls;
+    div.textContent = text;
+    logsDiv.appendChild(div);
+    logsDiv.scrollTop = logsDiv.scrollHeight;
+  }
+
+  updateCounters();
+}
+
+function renderFilter() {
+  logsDiv.innerHTML = '';
+  for (const entry of allLines) {
+    if (matchesFilter(entry.worker)) {
+      const div = document.createElement('div');
+      div.className = 'log-line ' + entry.cls;
+      div.textContent = entry.text;
+      logsDiv.appendChild(div);
+    }
+  }
+  logsDiv.scrollTop = logsDiv.scrollHeight;
+}
+
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelector('.tab.active').classList.remove('active');
+    tab.classList.add('active');
+    activeFilter = tab.dataset.filter;
+    renderFilter();
+  });
+});
+
 function connect() {
   const es = new EventSource('/sse/logs');
   es.onopen = () => { statusDiv.textContent = 'Подключено (SSE)'; };
-  es.onmessage = (e) => {
-    const div = document.createElement('div');
-    div.className = 'log-line ' + getLogClass(e.data);
-    div.textContent = e.data;
-    logsDiv.appendChild(div);
-    lineCount++;
-    if (lineCount > 1000) { logsDiv.removeChild(logsDiv.firstChild); lineCount--; }
-    logsDiv.scrollTop = logsDiv.scrollHeight;
-  };
+  es.onmessage = (e) => { addLine(e.data); };
   es.onerror = () => {
     statusDiv.textContent = 'Отключено. Переподключение...';
     es.close();

@@ -131,6 +131,10 @@ class UpdateQueueConfig:
         self.freshness_normal_hours: int = data.get("freshness_normal_hours", 2)
         self.freshness_low_hours: int = data.get("freshness_low_hours", 6)
         self.full_history_interval_hours: int = data.get("full_history_interval_hours", 24)
+        # Enricher: интервал между запросами pricehistory (сек)
+        self.enricher_interval_seconds: int = data.get("enricher_interval_seconds", 30)
+        # Enricher: сколько дней данные считаются свежими (не переобогащать)
+        self.enricher_freshness_days: int = data.get("enricher_freshness_days", 7)
 
 
 class GameConfig:

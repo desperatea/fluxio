@@ -101,18 +101,24 @@ class Bot:
         steam_client = SteamClient()
         await steam_client.validate_proxies()
 
-        # Воркеры Фазы 2
+        # Воркеры
+        from fluxio.core.workers.buyer import BuyerWorker
+        from fluxio.core.workers.enricher import EnricherWorker
         from fluxio.core.workers.scanner import ScannerWorker
         from fluxio.core.workers.updater import UpdaterWorker
 
         scanner = ScannerWorker(cs2dt_client)
         updater = UpdaterWorker(steam_client)
-        self._workers = [scanner, updater]
+        enricher = EnricherWorker(steam_client)
+        buyer = BuyerWorker(cs2dt_client)
+        self._workers = [scanner, updater, enricher, buyer]
 
         # Регистрируем воркеры и клиенты для дашборда
         self._container.register_instance(SteamClient, steam_client)
         self._container.register_instance(ScannerWorker, scanner)
         self._container.register_instance(UpdaterWorker, updater)
+        self._container.register_instance(EnricherWorker, enricher)
+        self._container.register_instance(BuyerWorker, buyer)
 
         self._running = True
 
@@ -137,6 +143,8 @@ class Bot:
         tasks = [
             asyncio.create_task(scanner.run(), name="scanner"),
             asyncio.create_task(updater.run(), name="updater"),
+            asyncio.create_task(enricher.run(), name="enricher"),
+            asyncio.create_task(buyer.run(), name="buyer"),
             asyncio.create_task(self.config_watcher(), name="config_watcher"),
             asyncio.create_task(server.serve(), name="dashboard"),
         ]

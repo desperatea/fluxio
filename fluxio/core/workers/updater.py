@@ -4,12 +4,14 @@
 1. ZPOPMAX steam:update_queue → батч предметов с наивысшим приоритетом
 2. Для каждого предмета (параллельно через asyncio.gather):
    a. Проверить кэш steam:price:{name} (TTL 30 мин) — если свежий, пропустить
-   b. Запросить Steam get_median_price()
+   b. Запросить Steam get_price_overview() (быстро, без куки)
    c. Закэшировать в Redis с TTL 30 мин
    d. Обновить steam:freshness hash
    e. Обновить Item в БД (steam_price_usd, steam_volume_24h, steam_updated_at)
-   f. Рассчитать дисконт — если >= порога: SADD arb:candidates
-      иначе: SREM arb:candidates
+   f. Проверить enrichment из БД (steam_median_30d, enriched_at)
+      — если нет обогащения → SADD steam:enrich_queue, пропустить
+      — если есть → рассчитать дисконт, проверить стабильность цены
+   g. Дисконт >= порога: SADD arb:candidates, иначе SREM
 3. Если очередь пуста — пауза 30с и повтор
 
 Размер батча и параллельность — динамические, зависят от кол-ва прокси.
@@ -18,7 +20,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from loguru import logger
 
@@ -29,6 +31,7 @@ from fluxio.db.session import async_session_factory
 from fluxio.db.unit_of_work import UnitOfWork
 from fluxio.utils.redis_client import (
     KEY_CANDIDATES,
+    KEY_ENRICH_QUEUE,
     KEY_FRESHNESS,
     KEY_STEAM_PRICE,
     KEY_UPDATE_QUEUE,
@@ -47,6 +50,9 @@ class UpdaterWorker(BaseWorker):
 
     Запускается как asyncio task через asyncio.create_task(updater.run()).
     Размер батча динамический — равен кол-ву прокси-каналов.
+
+    Использует только priceoverview (быстро, без куки).
+    30-дневная медиана берётся из БД (поля enrichment от EnricherWorker).
     """
 
     def __init__(self, steam_client: SteamClient) -> None:
@@ -106,104 +112,150 @@ class UpdaterWorker(BaseWorker):
     async def _update_item(self, hash_name: str, redis: object) -> None:  # type: ignore[type-arg]
         """Обновить Steam-цену одного предмета.
 
-        1. Проверить кэш Redis
-        2. Если нет — запросить Steam API
-        3. Обновить кэш, freshness, DB, candidates
+        1. Проверить кэш Redis → если нет, запросить priceoverview
+        2. Обновить кэш, freshness, DB
+        3. Проверить enrichment (30д медиана из БД)
+           — нет enrichment → отправить в очередь обогащения
+           — есть → проверить стабильность и дисконт → кандидаты
         """
         redis_client = redis  # type alias для clarity
 
-        # Проверяем кэш Steam цены
+        # ── Шаг 1: Получить текущую цену (priceoverview) ──
         cache_key = KEY_STEAM_PRICE.format(hash_name)
         cached = await redis_client.hgetall(cache_key)
 
-        steam_median: float | None = None
-        steam_volume: int | None = None
         steam_lowest: float | None = None
+        steam_median_24h: float | None = None
+        steam_volume_24h: int | None = None
 
         if cached and cached.get("median"):
-            # Используем кэш
             try:
-                steam_median = float(cached["median"])
-                steam_volume = int(cached.get("volume", 0)) or None
+                steam_median_24h = float(cached["median"])
+                steam_volume_24h = int(cached.get("volume", 0)) or None
                 steam_lowest = float(cached["lowest"]) if cached.get("lowest") else None
-                logger.debug(f"Updater: кэш [{hash_name}] median=${steam_median:.4f}")
+                logger.debug(f"Updater: кэш [{hash_name}] lowest=${steam_lowest}, median_24h=${steam_median_24h:.4f}")
             except (ValueError, TypeError):
-                cached = {}  # сбрасываем битый кэш
+                cached = {}
 
-        if steam_median is None:
-            # Запрашиваем у Steam
+        if steam_median_24h is None:
+            # Запрашиваем только priceoverview (быстро, без куки)
             app_id = self._get_app_id()
-            price_data = await self._steam.get_median_price(hash_name, app_id=app_id)
+            overview = await self._steam.get_price_overview(hash_name, app_id=app_id)
+            overview_data = self._steam._parse_overview(overview) if overview else None
 
-            if price_data is None:
+            if overview_data is None:
                 logger.debug(f"Updater: Steam не вернул цену для [{hash_name}]")
                 return
 
-            steam_median = float(price_data.median_price_usd)
-            steam_volume = price_data.sales_count
-            steam_lowest = float(price_data.lowest_price_usd) if price_data.lowest_price_usd else None
+            steam_median_24h = overview_data.median_price_usd
+            steam_volume_24h = overview_data.sales_count
+            steam_lowest = overview_data.lowest_price_usd
 
             # Кэшируем в Redis (TTL 30 мин)
-            cache_mapping: dict[str, str] = {"median": str(steam_median)}
-            if steam_volume is not None:
-                cache_mapping["volume"] = str(steam_volume)
+            cache_mapping: dict[str, str] = {
+                "median": str(steam_median_24h),
+            }
+            if steam_volume_24h is not None:
+                cache_mapping["volume"] = str(steam_volume_24h)
             if steam_lowest is not None:
                 cache_mapping["lowest"] = str(steam_lowest)
 
             await redis_client.hset(cache_key, mapping=cache_mapping)
             await redis_client.expire(cache_key, STEAM_PRICE_TTL)
 
-        # Обновляем freshness
+        # Текущая цена листинга для расчёта дисконта
+        steam_current = steam_lowest if steam_lowest and steam_lowest > 0 else steam_median_24h
+
+        # ── Шаг 2: Обновить freshness и БД ──
         now_iso = datetime.now(timezone.utc).isoformat()
         await redis_client.hset(KEY_FRESHNESS, hash_name, now_iso)
 
-        # Обновляем БД
         async with UnitOfWork(async_session_factory) as uow:
             item = await uow.items.get_by_name(hash_name)
-            if item is not None:
-                item.steam_price_usd = steam_median
-                if steam_volume is not None:
-                    item.steam_volume_24h = steam_volume
-                if hasattr(item, "steam_updated_at"):
-                    item.steam_updated_at = datetime.now(timezone.utc)
-                await uow.commit()
+            if item is None:
+                logger.debug(f"Updater: предмет [{hash_name}] не найден в БД")
+                return
 
-                # Рассчитываем дисконт и обновляем кандидатов
-                item_price = float(item.price_usd or 0)
-                if item_price > 0 and steam_median > 0:
-                    fee = config.fees.steam_fee_percent / 100
-                    net_steam = steam_median * (1 - fee)
-                    discount = (net_steam - item_price) / net_steam * 100
+            item.steam_price_usd = steam_current
+            if steam_volume_24h is not None:
+                item.steam_volume_24h = steam_volume_24h
+            item.steam_updated_at = datetime.now(timezone.utc)
+            await uow.commit()
 
-                    # Проверяем ликвидность
-                    volume_ok = (
-                        steam_volume is not None
-                        and steam_volume >= config.trading.min_sales_volume_7d
+            # ── Шаг 3: Проверить enrichment и решить по кандидатам ──
+            item_price = float(item.price_usd or 0)
+            if item_price <= 0 or steam_current <= 0:
+                await redis_client.srem(KEY_CANDIDATES, hash_name)
+                return
+
+            # Проверяем наличие обогащения (30д медиана из БД)
+            enrichment_fresh = self._is_enrichment_fresh(item)
+
+            if not enrichment_fresh:
+                # Нет обогащения или устарело → отправить в очередь enricher
+                await redis_client.sadd(KEY_ENRICH_QUEUE, hash_name)
+                await redis_client.srem(KEY_CANDIDATES, hash_name)
+                logger.debug(
+                    f"Updater: [{hash_name}] нет обогащения → "
+                    f"отправлен в очередь enricher"
+                )
+                return
+
+            # Есть свежее обогащение — используем 30д медиану из БД
+            steam_median_30d = float(item.steam_median_30d)
+            steam_volume_7d = item.steam_volume_7d or 0
+
+            fee = config.fees.steam_fee_percent / 100
+            net_steam = steam_current * (1 - fee)
+            discount = (net_steam - item_price) / net_steam * 100
+
+            # Проверяем ликвидность (объём продаж за 7 дней)
+            volume_ok = steam_volume_7d >= config.trading.min_sales_volume_7d
+
+            # Проверяем стабильность цены: медиана 30д >= 80% от текущей
+            # Если медиана сильно ниже текущей — цена может быть завышена
+            median_ratio_ok = True
+            if steam_median_30d > 0 and steam_current > 0:
+                median_ratio = steam_median_30d / steam_current
+                median_ratio_ok = median_ratio >= 0.8
+                if not median_ratio_ok:
+                    logger.info(
+                        f"Updater: [{hash_name}] отклонён — "
+                        f"медиана 30д=${steam_median_30d:.4f} < 80% от "
+                        f"текущей=${steam_current:.4f} "
+                        f"(ratio={median_ratio:.1%})"
                     )
 
-                    if (
-                        discount >= config.trading.min_discount_percent
-                        and volume_ok
-                        and config.trading.min_price_usd <= item_price <= config.trading.max_price_usd
-                    ):
-                        await redis_client.sadd(KEY_CANDIDATES, hash_name)
-                        logger.info(
-                            f"Updater: КАНДИДАТ [{hash_name}] "
-                            f"дисконт={discount:.1f}%, "
-                            f"цена=${item_price:.4f}, "
-                            f"steam=${steam_median:.4f}"
-                        )
-                    else:
-                        await redis_client.srem(KEY_CANDIDATES, hash_name)
-                else:
-                    await redis_client.srem(KEY_CANDIDATES, hash_name)
+            if (
+                discount >= config.trading.min_discount_percent
+                and volume_ok
+                and median_ratio_ok
+                and config.trading.min_price_usd <= item_price <= config.trading.max_price_usd
+            ):
+                await redis_client.sadd(KEY_CANDIDATES, hash_name)
+                logger.info(
+                    f"Updater: КАНДИДАТ [{hash_name}] "
+                    f"дисконт={discount:.1f}%, "
+                    f"цена=${item_price:.4f}, "
+                    f"steam=${steam_current:.4f}, "
+                    f"медиана 30д=${steam_median_30d:.4f}"
+                )
             else:
-                logger.debug(f"Updater: предмет [{hash_name}] не найден в БД")
+                await redis_client.srem(KEY_CANDIDATES, hash_name)
 
         logger.debug(
             f"Updater: обновлён [{hash_name}] "
-            f"steam=${steam_median:.4f}"
+            f"steam=${steam_current:.4f}"
         )
+
+    @staticmethod
+    def _is_enrichment_fresh(item: object) -> bool:
+        """Проверить, есть ли свежее обогащение у предмета."""
+        if item.steam_median_30d is None or item.enriched_at is None:
+            return False
+        age = datetime.now(timezone.utc) - item.enriched_at
+        freshness_days = config.update_queue.enricher_freshness_days
+        return age < timedelta(days=freshness_days)
 
     def _get_app_id(self) -> int:
         """Получить app_id первой включённой игры."""

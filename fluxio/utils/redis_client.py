@@ -29,6 +29,9 @@ STEAM_PRICE_TTL = 30 * 60          # 30 минут в секундах
 # Идемпотентность покупок (Set: member=product_id)
 KEY_PURCHASED_IDS = "buy:purchased_ids"
 
+# Очередь обогащения pricehistory (Set: member=market_hash_name)
+KEY_ENRICH_QUEUE = "steam:enrich_queue"
+
 # Pub/Sub каналы
 CHANNEL_WORKER_STATUS = "channel:worker_status"
 CHANNEL_PURCHASES = "channel:purchases"

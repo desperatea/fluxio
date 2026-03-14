@@ -191,6 +191,12 @@ class Item(Base):
     steam_updated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Данные обогащения из pricehistory (30-дневная медиана)
+    steam_median_30d: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    steam_volume_7d: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    enriched_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     first_seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
