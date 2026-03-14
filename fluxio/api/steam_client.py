@@ -37,6 +37,8 @@ class _AuthChannel:
     has_auth: bool = True
     fail_count: int = 0
     label: str = ""
+    # Коэффициент конвертации валюты аккаунта в USD (auto-detected)
+    currency_rate: float | None = None
 
 # Steam Market rate limit: ~1 запрос в 5 секунд на канал (консервативно)
 _STEAM_RATE = 0.2
@@ -705,7 +707,21 @@ class SteamClient:
 
         if data and data.get("success"):
             channel.fail_count = 0
-            return data.get("prices", [])
+            prices = data.get("prices", [])
+
+            # Автодетект валюты: при первом запросе определяем курс
+            if prices and channel.currency_rate is None:
+                await self._detect_currency_rate(channel, market_hash_name, prices)
+
+            # Конвертируем в USD если валюта не доллар
+            if prices and channel.currency_rate is not None and channel.currency_rate != 1.0:
+                prices = [
+                    [entry[0], entry[1] / channel.currency_rate, *entry[2:]]
+                    if len(entry) >= 2 else entry
+                    for entry in prices
+                ]
+
+            return prices
 
         # Автодетект протухших cookies
         channel.fail_count += 1
@@ -717,6 +733,66 @@ class SteamClient:
                 f"(3 подряд ошибки pricehistory, куки протухли?)"
             )
         return None
+
+    async def _detect_currency_rate(
+        self,
+        channel: _AuthChannel,
+        hash_name: str,
+        history: list[list[Any]],
+    ) -> None:
+        """Определить курс валюты аккаунта к USD.
+
+        Сравниваем медиану из pricehistory с priceoverview (который всегда USD).
+        Если разница > 2x — аккаунт в другой валюте, вычисляем коэффициент.
+        """
+        # Берём последние записи из history для сравнения
+        recent_prices: list[float] = []
+        for entry in history[-20:]:
+            if len(entry) >= 2:
+                try:
+                    recent_prices.append(float(entry[1]))
+                except (ValueError, TypeError):
+                    continue
+
+        if not recent_prices:
+            channel.currency_rate = 1.0
+            return
+
+        history_median = statistics.median(recent_prices)
+
+        # Получаем USD цену через priceoverview (публичный, всегда USD)
+        overview = await self.get_price_overview(hash_name)
+        if not overview:
+            channel.currency_rate = 1.0
+            logger.warning(
+                f"Auth-канал {channel.label}: не удалось определить валюту "
+                f"(priceoverview недоступен), считаем USD"
+            )
+            return
+
+        overview_data = self._parse_overview(overview)
+        if not overview_data or overview_data.median_price_usd <= 0:
+            channel.currency_rate = 1.0
+            return
+
+        usd_price = overview_data.median_price_usd
+        ratio = history_median / usd_price
+
+        if ratio < 1.5:
+            # Валюта совпадает (USD или близко)
+            channel.currency_rate = 1.0
+            logger.info(
+                f"Auth-канал {channel.label}: валюта USD "
+                f"(ratio={ratio:.2f})"
+            )
+        else:
+            # Другая валюта — запоминаем курс
+            channel.currency_rate = ratio
+            logger.info(
+                f"Auth-канал {channel.label}: валюта не-USD, "
+                f"курс={ratio:.2f} "
+                f"(history={history_median:.2f}, overview=${usd_price:.4f})"
+            )
 
     # ──────────────────────────────────────────────────────
     # Расчёт медианной цены за N дней
