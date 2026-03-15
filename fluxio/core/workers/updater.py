@@ -212,24 +212,40 @@ class UpdaterWorker(BaseWorker):
             # Проверяем ликвидность (объём продаж за 7 дней)
             volume_ok = steam_volume_7d >= config.trading.min_sales_volume_7d
 
-            # Проверяем стабильность цены: медиана 30д >= 80% от текущей
-            # Если медиана сильно ниже текущей — цена может быть завышена
-            median_ratio_ok = True
-            if steam_median_30d > 0 and steam_current > 0:
-                median_ratio = steam_median_30d / steam_current
-                median_ratio_ok = median_ratio >= 0.8
-                if not median_ratio_ok:
-                    logger.info(
-                        f"Updater: [{hash_name}] отклонён — "
-                        f"медиана 30д=${steam_median_30d:.4f} < 80% от "
-                        f"текущей=${steam_current:.4f} "
-                        f"(ratio={median_ratio:.1%})"
+            # Проверка анти-манипуляции (данные из enricher)
+            am = config.anti_manipulation
+            spike_ratio = item.price_spike_ratio
+            price_cv = item.price_stability_cv
+            sales_at_price = item.sales_at_current_price
+
+            spike_ok = (spike_ratio or 0) <= am.max_spike_ratio
+            cv_ok = (price_cv or 0) <= am.max_price_cv
+            sales_ok = (sales_at_price or 0) >= am.min_sales_at_current_price
+            manipulation_ok = spike_ok and cv_ok and sales_ok
+
+            if not manipulation_ok:
+                reasons: list[str] = []
+                if not spike_ok:
+                    reasons.append(
+                        f"spike={spike_ratio:.2f}>{am.max_spike_ratio}"
                     )
+                if not cv_ok:
+                    reasons.append(
+                        f"CV={price_cv:.3f}>{am.max_price_cv}"
+                    )
+                if not sales_ok:
+                    reasons.append(
+                        f"sales@price={sales_at_price}<{am.min_sales_at_current_price}"
+                    )
+                logger.info(
+                    f"Updater: [{hash_name}] отклонён — "
+                    f"анти-манипуляция: {', '.join(reasons)}"
+                )
 
             if (
                 discount >= config.trading.min_discount_percent
                 and volume_ok
-                and median_ratio_ok
+                and manipulation_ok
                 and config.trading.min_price_usd <= item_price <= config.trading.max_price_usd
             ):
                 await redis_client.sadd(KEY_CANDIDATES, hash_name)
@@ -238,7 +254,9 @@ class UpdaterWorker(BaseWorker):
                     f"дисконт={discount:.1f}%, "
                     f"цена=${item_price:.4f}, "
                     f"steam=${steam_current:.4f}, "
-                    f"медиана 30д=${steam_median_30d:.4f}"
+                    f"медиана 30д=${steam_median_30d:.4f}, "
+                    f"CV={price_cv:.3f}, spike={spike_ratio:.2f}, "
+                    f"sales@price={sales_at_price}"
                 )
             else:
                 await redis_client.srem(KEY_CANDIDATES, hash_name)

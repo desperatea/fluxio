@@ -23,7 +23,9 @@ monitoring:
 
 anti_manipulation:
   max_price_growth_2w_percent: 30 # Максимальный рост цены за 2 нед. (%)
-  min_sales_at_current_price: 5   # Мин. продаж по текущей цене за месяц
+  min_sales_at_current_price: 5   # Мин. продаж по текущей цене (±20%)
+  max_spike_ratio: 2.0            # Макс. рост средней за 3 дня vs 27 дней
+  max_price_cv: 0.5               # Макс. коэффициент вариации цены
 
 safety:
   max_purchases_per_hour: 20      # Лимит покупок в час (kill switch)

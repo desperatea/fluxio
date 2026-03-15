@@ -16,6 +16,7 @@ Steam API (pricehistory требует авторизацию, без прокс
 from __future__ import annotations
 
 import asyncio
+import statistics
 from datetime import datetime, timedelta, timezone
 
 from loguru import logger
@@ -115,6 +116,10 @@ class EnricherWorker(BaseWorker):
         # Сохраняем историю продаж в steam_sales_history
         await self._save_sales_history(hash_name, history)
 
+        # Вычисляем метрики анти-манипуляции
+        price_cv = self._calc_price_cv(history)
+        spike_ratio = self._calc_spike_ratio(history)
+
         # Обновляем Item в БД
         async with UnitOfWork(async_session_factory) as uow:
             item = await uow.items.get_by_name(hash_name)
@@ -122,12 +127,24 @@ class EnricherWorker(BaseWorker):
                 item.steam_median_30d = price_data.median_price_usd
                 item.steam_volume_7d = volume_7d
                 item.enriched_at = now
+                item.price_stability_cv = price_cv
+                item.price_spike_ratio = spike_ratio
+
+                # sales_at_current_price считаем по текущей цене из Steam
+                current_price = float(item.steam_price_usd or 0)
+                if current_price > 0:
+                    item.sales_at_current_price = self._calc_sales_at_price(
+                        history, current_price,
+                    )
+
                 await uow.commit()
 
         logger.info(
             f"Enricher: обогащён [{hash_name}] "
             f"медиана 30д=${price_data.median_price_usd:.4f}, "
-            f"объём 7д={volume_7d}"
+            f"объём 7д={volume_7d}, "
+            f"CV={price_cv:.3f}, spike={spike_ratio:.2f}, "
+            f"sales@price={item.sales_at_current_price if item else '?'}"
         )
 
     async def _save_sales_history(
@@ -189,6 +206,101 @@ class EnricherWorker(BaseWorker):
         logger.debug(
             f"Enricher: сохранено {len(rows)} записей истории [{hash_name}]"
         )
+
+    @staticmethod
+    def _calc_price_cv(history: list[list]) -> float:
+        """Коэффициент вариации цены: stddev / median.
+
+        Высокий CV = нестабильная цена (возможная манипуляция).
+        """
+        prices: list[float] = []
+        for entry in history:
+            if len(entry) >= 2:
+                try:
+                    prices.append(float(entry[1]))
+                except (ValueError, TypeError):
+                    continue
+
+        if len(prices) < 2:
+            return 0.0
+
+        median = statistics.median(prices)
+        if median <= 0:
+            return 0.0
+
+        stdev = statistics.stdev(prices)
+        return stdev / median
+
+    @staticmethod
+    def _calc_spike_ratio(history: list[list]) -> float:
+        """Отношение средней цены за последние 3 дня к средней за предыдущие 27 дней.
+
+        Высокий ratio = подозрительный спайк цены.
+        """
+        now = datetime.now(timezone.utc)
+        cutoff_3d = now - timedelta(days=3)
+        cutoff_30d = now - timedelta(days=30)
+
+        prices_3d: list[float] = []
+        prices_27d: list[float] = []
+
+        for entry in history:
+            if len(entry) < 2:
+                continue
+            try:
+                clean = entry[0].split(": +")[0].strip()
+                dt = datetime.strptime(clean, "%b %d %Y %H")  # noqa: DTZ007
+                dt = dt.replace(tzinfo=timezone.utc)
+                price = float(entry[1])
+            except (ValueError, TypeError, IndexError):
+                continue
+
+            if dt >= cutoff_3d:
+                prices_3d.append(price)
+            elif dt >= cutoff_30d:
+                prices_27d.append(price)
+
+        if not prices_3d or not prices_27d:
+            return 1.0  # Нет данных — считаем нормальным
+
+        avg_3d = sum(prices_3d) / len(prices_3d)
+        avg_27d = sum(prices_27d) / len(prices_27d)
+
+        if avg_27d <= 0:
+            return 1.0
+
+        return avg_3d / avg_27d
+
+    @staticmethod
+    def _calc_sales_at_price(
+        history: list[list], current_price: float,
+    ) -> int:
+        """Кол-во продаж по цене в диапазоне ±20% от текущей.
+
+        Мало продаж по этой цене = цена может быть искусственной.
+        """
+        low = current_price * 0.8
+        high = current_price * 1.2
+        total_volume = 0
+
+        for entry in history:
+            if len(entry) < 3:
+                continue
+            try:
+                price = float(entry[1])
+                vol_raw = entry[2]
+                vol = (
+                    int(vol_raw.replace(",", ""))
+                    if isinstance(vol_raw, str)
+                    else int(vol_raw)
+                )
+            except (ValueError, TypeError):
+                continue
+
+            if low <= price <= high:
+                total_volume += vol
+
+        return total_volume
 
     def _get_app_id(self) -> int:
         """Получить app_id первой включённой игры."""

@@ -109,6 +109,10 @@ class AntiManipulationConfig:
     def __init__(self, data: dict[str, Any]) -> None:
         self.max_price_growth_2w_percent: float = data.get("max_price_growth_2w_percent", 30)
         self.min_sales_at_current_price: int = data.get("min_sales_at_current_price", 5)
+        # Макс. отношение средней цены за 3 дня к средней за предыдущие 27 дней
+        self.max_spike_ratio: float = data.get("max_spike_ratio", 2.0)
+        # Макс. коэффициент вариации цены (stddev / median)
+        self.max_price_cv: float = data.get("max_price_cv", 0.5)
 
 
 class SafetyConfig:

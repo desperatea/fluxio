@@ -197,6 +197,10 @@ class Item(Base):
     enriched_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Анти-манипуляция: метрики из истории продаж
+    price_stability_cv: Mapped[float | None] = mapped_column(Float, nullable=True)
+    sales_at_current_price: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    price_spike_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
     first_seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
