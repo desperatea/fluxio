@@ -113,6 +113,10 @@ class AntiManipulationConfig:
         self.max_spike_ratio: float = data.get("max_spike_ratio", 2.0)
         # Макс. коэффициент вариации цены (stddev / median)
         self.max_price_cv: float = data.get("max_price_cv", 0.5)
+        # Макс. отношение цены листинга к медиане 30д (защита от завышенных листингов)
+        self.max_price_to_median_ratio: float = data.get("max_price_to_median_ratio", 2.0)
+        # Мин. кол-во листингов на Steam Market (защита от неликвидных предметов)
+        self.min_steam_listings: int = data.get("min_steam_listings", 15)
 
 
 class SafetyConfig:

@@ -201,6 +201,10 @@ class Item(Base):
     price_stability_cv: Mapped[float | None] = mapped_column(Float, nullable=True)
     sales_at_current_price: Mapped[int | None] = mapped_column(Integer, nullable=True)
     price_spike_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Steam Market: ордера (из itemordershistogram)
+    steam_item_nameid: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    steam_sell_listings: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    steam_buy_order_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     first_seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

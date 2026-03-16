@@ -176,6 +176,19 @@ class BuyerWorker(BaseWorker):
                 await redis.srem(KEY_CANDIDATES, hash_name)
                 return 0
 
+            # Safety net: если по медиане 30д сделка убыточна — отклонить
+            steam_median_30d = float(item.steam_median_30d or 0)
+            if steam_median_30d > 0:
+                net_median = steam_median_30d * (1 - fee)
+                if net_median < cs2dt_price:
+                    logger.info(
+                        f"Buyer: [{hash_name}] safety net — убыток по медиане "
+                        f"(cs2dt=${cs2dt_price:.4f}, "
+                        f"net_median=${net_median:.4f})"
+                    )
+                    await redis.srem(KEY_CANDIDATES, hash_name)
+                    return 0
+
             if not cs2dt_item_id:
                 logger.debug(f"Buyer: [{hash_name}] нет cs2dt_item_id, пропуск")
                 return 0

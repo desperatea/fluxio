@@ -4,9 +4,9 @@ trading:
   max_price_usd: 1            # Максимальная цена предмета (USD)
   max_single_purchase_usd: 1  # Макс. бюджет на одну покупку (USD)
   daily_limit_usd: 100.0          # Дневной лимит трат (USD)
-  stop_balance_usd: 10.0          # Остановить при остатке ниже (USD)
+  stop_balance_usd: 0.10          # Остановить при остатке ниже (USD)
   max_same_item_count: 15         # Макс. штук одного предмета за 24ч
-  min_sales_volume_7d: 5      # Мин. продаж за 7 дней (ликвидность)
+  min_sales_volume_7d: 40      # Мин. продаж за 7 дней (ликвидность)
   dry_run: true                   # true = симуляция без реальных покупок
   semi_auto: false                # true = подтверждение покупки через Telegram
 
@@ -26,9 +26,11 @@ anti_manipulation:
   min_sales_at_current_price: 5   # Мин. продаж по текущей цене (±20%)
   max_spike_ratio: 2.0            # Макс. рост средней за 3 дня vs 27 дней
   max_price_cv: 0.5               # Макс. коэффициент вариации цены
+  max_price_to_median_ratio: 2.0  # Макс. отношение цены листинга к медиане 30д
+  min_steam_listings: 15          # Мин. листингов на Steam Market
 
 safety:
-  max_purchases_per_hour: 20      # Лимит покупок в час (kill switch)
+  max_purchases_per_hour: 80      # Лимит покупок в час (kill switch)
   balance_anomaly_percent: 20     # Аномалия: баланс упал на >20% за цикл
   circuit_breaker_threshold: 5    # Ошибок подряд до отключения API
   circuit_breaker_timeout_min: 5  # Минут паузы после отключения
@@ -40,6 +42,7 @@ update_queue:
   freshness_normal_hours: 2
   freshness_low_hours: 6
   full_history_interval_hours: 24
+  enricher_interval_seconds: 5    # 5 сек между батчами обогащения
 
 notifications:
   quiet_mode: false               # true = только критические алерты

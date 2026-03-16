@@ -237,13 +237,38 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
         mode_color = "#4caf50" if config.trading.dry_run else "#f44336"
 
         try:
-            from fluxio.utils.redis_client import KEY_CANDIDATES, KEY_UPDATE_QUEUE, get_redis
+            from fluxio.utils.redis_client import KEY_CANDIDATES, KEY_ENRICH_QUEUE, KEY_UPDATE_QUEUE, get_redis
             redis = await get_redis()
             queue_len = await redis.zcard(KEY_UPDATE_QUEUE)
             candidates_count = await redis.scard(KEY_CANDIDATES)
+            enrich_queue_len = await redis.scard(KEY_ENRICH_QUEUE)
         except Exception:
             queue_len = 0
             candidates_count = 0
+            enrich_queue_len = 0
+
+        # Статистика обогащения из БД
+        enriched_count = 0
+        not_enriched_count = 0
+        total_items = 0
+        try:
+            from sqlalchemy import func as sa_func, select
+
+            from fluxio.db.models import Item
+            from fluxio.db.session import async_session_factory
+            from fluxio.db.unit_of_work import UnitOfWork
+            async with UnitOfWork(async_session_factory) as uow:
+                total_items = (await uow._session.execute(
+                    select(sa_func.count()).select_from(Item)
+                )).scalar() or 0
+                enriched_count = (await uow._session.execute(
+                    select(sa_func.count()).select_from(Item).where(Item.enriched_at.isnot(None))
+                )).scalar() or 0
+                not_enriched_count = total_items - enriched_count
+        except Exception:
+            pass
+
+        enriched_pct = round(enriched_count / total_items * 100, 1) if total_items > 0 else 0
 
         return f"""<!DOCTYPE html>
 <html lang="ru">
@@ -266,6 +291,15 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
     <h2>Redis</h2>
     <div class="metric"><span class="label">Очередь Steam:</span> {queue_len} предметов</div>
     <div class="metric"><span class="label">Кандидатов:</span> {candidates_count}</div>
+  </div>
+  <div class="card">
+    <h2>Обогащение</h2>
+    <div class="metric"><span class="label">Обогащено:</span>
+      <strong style="color:#4caf50">{enriched_count}</strong> / {total_items}
+      <span style="color:#8f98a0">({enriched_pct}%)</span></div>
+    <div class="metric"><span class="label">Ожидает:</span>
+      <strong style="color:#ff9800">{not_enriched_count}</strong></div>
+    <div class="metric"><span class="label">В очереди enricher:</span> {enrich_queue_len}</div>
   </div>
   <div class="card">
     <h2>Быстрые ссылки</h2>
@@ -368,7 +402,6 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
                 from fluxio.db.session import async_session_factory
                 from fluxio.db.unit_of_work import UnitOfWork
                 async with UnitOfWork(async_session_factory) as uow:
-                    # Собираем все данные для сортировки
                     candidate_rows: list[tuple[float, str]] = []
                     for name in names:
                         item = await uow.items.get_by_name(name)
@@ -377,26 +410,30 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
                         p = float(item.price_usd) if item.price_usd else 0.0
                         sp = float(item.steam_price_usd) if item.steam_price_usd else 0.0
                         d_val = 0.0
+                        profit_val = 0.0
                         discount = ""
                         profit = ""
+                        vol = item.steam_volume_24h or 0
                         if p > 0 and sp > 0:
                             fee = config.fees.steam_fee_percent / 100
                             net = sp * (1 - fee)
                             d_val = (net - p) / net * 100 if net > 0 else 0
+                            profit_val = net - p
                             discount = f"{d_val:.1f}%"
-                            profit = f"${net - p:.4f}"
+                            profit = f"${profit_val:.4f}"
                         row = (
-                            f"<tr>"
+                            f'<tr data-discount="{d_val:.4f}" '
+                            f'data-profit="{profit_val:.6f}" '
+                            f'data-volume="{vol}">'
                             f"<td>{name}</td>"
                             f"<td>${p:.4f}</td>"
                             f"<td>${sp:.4f}</td>"
                             f"<td><strong style='color:#4caf50'>{discount}</strong></td>"
                             f"<td>{profit}</td>"
-                            f"<td>{item.steam_volume_24h or '—'}</td>"
+                            f"<td>{vol or '—'}</td>"
                             f"</tr>"
                         )
                         candidate_rows.append((d_val, row))
-                    # Сортировка по дисконту (лучшие сверху)
                     candidate_rows.sort(key=lambda x: x[0], reverse=True)
                     rows_html = "".join(r for _, r in candidate_rows)
         except Exception as e:
@@ -413,6 +450,11 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
        border: none; cursor: pointer; font-size: 14px; margin-left: 16px; }}
 .btn-danger {{ background: #3d0000; color: #f44336; border: 1px solid #f44336; }}
 .btn-danger:hover {{ background: #f44336; color: #fff; }}
+th.sortable {{ cursor: pointer; user-select: none; }}
+th.sortable:hover {{ color: #fff; }}
+th.sortable::after {{ content: ' ⇅'; opacity: 0.4; }}
+th.sort-desc::after {{ content: ' ↓'; opacity: 1; }}
+th.sort-asc::after {{ content: ' ↑'; opacity: 1; }}
 </style></head>
 <body>
 <h1>Кандидаты на покупку</h1>
@@ -422,10 +464,12 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
   В очереди обновления: {queue_len}
   <button class="btn btn-danger" onclick="clearCandidates()">Очистить список</button>
 </p>
-<table>
+<table id="candidates-table">
 <thead><tr>
   <th>market_hash_name</th><th>Цена CS2DT</th><th>Steam медиана</th>
-  <th>Дисконт</th><th>Прибыль</th><th>Volume 24h</th>
+  <th class="sortable sort-desc" data-key="discount">Дисконт</th>
+  <th class="sortable" data-key="profit">Прибыль</th>
+  <th class="sortable" data-key="volume">Volume 24h</th>
 </tr></thead>
 <tbody>{rows_html}</tbody>
 </table>
@@ -441,6 +485,31 @@ async function clearCandidates() {{
     alert('Ошибка: ' + (data.error || 'неизвестная'));
   }}
 }}
+
+// Сортировка таблицы по data-атрибутам
+document.querySelectorAll('th.sortable').forEach(th => {{
+  th.addEventListener('click', () => {{
+    const key = th.dataset.key;
+    const tbody = document.querySelector('#candidates-table tbody');
+    const rows = Array.from(tbody.querySelectorAll('tr'));
+    const isDesc = th.classList.contains('sort-desc');
+    const newDir = isDesc ? 'asc' : 'desc';
+
+    // Сбросить все заголовки
+    document.querySelectorAll('th.sortable').forEach(h => {{
+      h.classList.remove('sort-asc', 'sort-desc');
+    }});
+    th.classList.add('sort-' + newDir);
+
+    rows.sort((a, b) => {{
+      const va = parseFloat(a.dataset[key]) || 0;
+      const vb = parseFloat(b.dataset[key]) || 0;
+      return newDir === 'desc' ? vb - va : va - vb;
+    }});
+
+    rows.forEach(r => tbody.appendChild(r));
+  }});
+}});
 </script>
 </body></html>"""
 
@@ -500,23 +569,78 @@ async function clearCandidates() {{
         total_profit = 0.0
         dry_count = 0
         live_count = 0
+        filtered_count = 0
+
+        total_median_profit = 0.0
 
         try:
+            from urllib.parse import quote
+
+            from sqlalchemy import func as sa_func, select as sa_select
+
+            from fluxio.db.models import Purchase
             from fluxio.db.session import async_session_factory
             from fluxio.db.unit_of_work import UnitOfWork
             async with UnitOfWork(async_session_factory) as uow:
-                purchases = await uow.purchases.get_all(limit=200)
-                total = len(purchases)
+                # Статистика по ВСЕМ покупкам
+                all_purchases = await uow.purchases.get_all(limit=100_000)
+                total = len(all_purchases)
                 fee = config.fees.steam_fee_percent / 100
+
+                # Кэш данных из items
+                items_cache: dict[str, object] = {}
+                for p in all_purchases:
+                    if p.market_hash_name not in items_cache:
+                        items_cache[p.market_hash_name] = await uow.items.get_by_name(
+                            p.market_hash_name,
+                        )
+
+                for p in all_purchases:
+                    price = float(p.price_usd) if p.price_usd else 0
+                    steam = float(p.steam_price_usd) if p.steam_price_usd else 0
+                    if p.status == "filtered":
+                        filtered_count += 1
+                        continue
+                    if p.status in ("success", "pending"):
+                        total_spent += price
+                        if steam > 0 and price > 0:
+                            total_profit += steam * (1 - fee) - price
+                        # Прибыль по медиане
+                        item_obj = items_cache.get(p.market_hash_name)
+                        median = float(item_obj.steam_median_30d) if item_obj and item_obj.steam_median_30d else 0
+                        if median > 0 and price > 0:
+                            total_median_profit += median * (1 - fee) - price
+                        if p.dry_run:
+                            dry_count += 1
+                        else:
+                            live_count += 1
+
+                # Таблица — последние 200
+                purchases = all_purchases[:200]
+
                 rows = []
                 for p in purchases:
                     price = float(p.price_usd) if p.price_usd else 0
                     steam = float(p.steam_price_usd) if p.steam_price_usd else 0
                     disc = f"{float(p.discount_percent):.1f}%" if p.discount_percent else "—"
                     ts = p.purchased_at.strftime("%Y-%m-%d %H:%M") if p.purchased_at else "—"
-                    delivered = p.delivered_at.strftime("%H:%M") if p.delivered_at else "—"
 
-                    # Ожидаемая прибыль
+                    item_obj = items_cache.get(p.market_hash_name)
+                    vol = item_obj.steam_volume_24h if item_obj and item_obj.steam_volume_24h else 0
+                    median = float(item_obj.steam_median_30d) if item_obj and item_obj.steam_median_30d else 0
+
+                    # Ratio: steam_price / median_30d
+                    ratio = steam / median if median > 0 and steam > 0 else 0
+                    ratio_str = f"{ratio:.1f}x" if ratio > 0 else "—"
+                    ratio_color = "#c7d5e0"
+                    if ratio > 2.0:
+                        ratio_color = "#f44336"
+                    elif ratio > 1.5:
+                        ratio_color = "#ff9800"
+
+                    median_str = f"${median:.4f}" if median > 0 else "—"
+
+                    # Ожидаемая прибыль (по steam_price)
                     profit = 0.0
                     profit_str = "—"
                     if steam > 0 and price > 0:
@@ -525,42 +649,67 @@ async function clearCandidates() {{
                         color_p = "#4caf50" if profit > 0 else "#f44336"
                         profit_str = f'<span style="color:{color_p}">${profit:.4f}</span>'
 
+                    # Прибыль по медиане (реалистичная оценка)
+                    median_profit = 0.0
+                    median_profit_str = "—"
+                    if median > 0 and price > 0:
+                        net_median = median * (1 - fee)
+                        median_profit = net_median - price
+                        mp_color = "#4caf50" if median_profit > 0 else "#f44336"
+                        median_profit_str = f'<span style="color:{mp_color}">${median_profit:.4f}</span>'
+
                     # Статус с цветом
                     status_colors = {
                         "success": "#4caf50",
                         "pending": "#ff9800",
                         "failed": "#f44336",
                         "cancelled": "#8f98a0",
+                        "filtered": "#ff6b6b",
                     }
                     status_color = status_colors.get(p.status, "#c7d5e0")
                     dry_badge = ' <span class="badge badge-warn">DRY</span>' if p.dry_run else ""
+                    is_filtered = p.status == "filtered"
+                    row_style = ' style="opacity:0.45"' if is_filtered else ""
+                    filter_note = ""
+                    if is_filtered and p.notes:
+                        filter_note = (
+                            f'<div style="font-size:10px;color:#ff6b6b;'
+                            f'max-width:250px;overflow:hidden;text-overflow:ellipsis;'
+                            f'white-space:nowrap" title="{p.notes}">{p.notes}</div>'
+                        )
+
+                    # Ссылка на Steam Market
+                    steam_url = f"https://steamcommunity.com/market/listings/570/{quote(p.market_hash_name)}"
 
                     rows.append(
-                        f"<tr>"
-                        f"<td>{p.market_hash_name}</td>"
+                        f'<tr data-profit="{profit:.6f}" data-volume="{vol}" '
+                        f'data-median-profit="{median_profit:.6f}" data-ratio="{ratio:.4f}"'
+                        f'{row_style}>'
+                        f'<td><a href="{steam_url}" target="_blank" '
+                        f'style="color:#66c0f4;text-decoration:none">{p.market_hash_name}</a>'
+                        f'{filter_note}</td>'
                         f"<td>${price:.4f}</td>"
                         f"<td>${steam:.4f}</td>"
+                        f"<td>{median_str}</td>"
+                        f'<td style="color:{ratio_color}">{ratio_str}</td>'
                         f"<td>{disc}</td>"
                         f"<td>{profit_str}</td>"
+                        f"<td>{median_profit_str}</td>"
+                        f"<td>{vol or '—'}</td>"
                         f"<td><span style='color:{status_color}'>{p.status}</span>{dry_badge}</td>"
                         f"<td>{ts}</td>"
                         f"</tr>"
                     )
-                    if p.status in ("success", "pending"):
-                        total_spent += price
-                        total_profit += profit
-                        if p.dry_run:
-                            dry_count += 1
-                        else:
-                            live_count += 1
                 rows_html = "".join(rows)
         except Exception as e:
-            rows_html = f"<tr><td colspan='7'>Ошибка: {e}</td></tr>"
+            logger.exception("Dashboard: ошибка на странице покупок")
+            rows_html = f"<tr><td colspan='11'>Ошибка: {e}</td></tr>"
 
         if not rows_html:
-            rows_html = "<tr><td colspan='7' style='text-align:center;color:#8f98a0'>Покупок пока нет.</td></tr>"
+            rows_html = "<tr><td colspan='11' style='text-align:center;color:#8f98a0'>Покупок пока нет.</td></tr>"
 
         profit_color = "#4caf50" if total_profit >= 0 else "#f44336"
+        median_profit_color = "#4caf50" if total_median_profit >= 0 else "#f44336"
         mode_label = "DRY RUN" if config.trading.dry_run else "LIVE"
 
         return f"""<!DOCTYPE html>
@@ -575,6 +724,11 @@ async function clearCandidates() {{
        border: none; cursor: pointer; font-size: 14px; margin-left: 16px; }}
 .btn-danger {{ background: #3d0000; color: #f44336; border: 1px solid #f44336; }}
 .btn-danger:hover {{ background: #f44336; color: #fff; }}
+th.sortable {{ cursor: pointer; user-select: none; }}
+th.sortable:hover {{ color: #fff; }}
+th.sortable::after {{ content: ' ⇅'; opacity: 0.4; }}
+th.sort-desc::after {{ content: ' ↓'; opacity: 1; }}
+th.sort-asc::after {{ content: ' ↑'; opacity: 1; }}
 </style></head>
 <body>
 <h1>Покупки ({mode_label})</h1>
@@ -586,21 +740,36 @@ async function clearCandidates() {{
     <div class="lbl">dry: {dry_count} | live: {live_count}</div>
   </div>
   <div class="stat-card">
+    <div class="lbl">Отсеяно фильтрами</div>
+    <div class="val" style="color:#f44336">{filtered_count}</div>
+  </div>
+  <div class="stat-card">
     <div class="lbl">Потрачено</div>
     <div class="val" style="color:#ff9800">${total_spent:.2f}</div>
   </div>
   <div class="stat-card">
-    <div class="lbl">Ожидаемая прибыль</div>
+    <div class="lbl">Прибыль (по листингу)</div>
     <div class="val" style="color:{profit_color}">${total_profit:.2f}</div>
+  </div>
+  <div class="stat-card">
+    <div class="lbl">Прибыль (по медиане 30д)</div>
+    <div class="val" style="color:{median_profit_color}">${total_median_profit:.2f}</div>
   </div>
 </div>
 <p>
+  Показано: {min(total, 200)} из {total}
   <button class="btn btn-danger" onclick="clearPurchases()">Очистить все покупки</button>
 </p>
-<table>
+<table id="purchases-table">
 <thead><tr>
   <th>Предмет</th><th>Цена</th><th>Steam</th>
-  <th>Дисконт</th><th>Прибыль</th><th>Статус</th><th>Дата</th>
+  <th>Медиана 30д</th>
+  <th class="sortable" data-key="ratio">Ratio</th>
+  <th>Дисконт</th>
+  <th class="sortable" data-key="profit">Прибыль</th>
+  <th class="sortable" data-key="median-profit">По медиане</th>
+  <th class="sortable" data-key="volume">Vol 24h</th>
+  <th>Статус</th><th>Дата</th>
 </tr></thead>
 <tbody>{rows_html}</tbody>
 </table>
@@ -616,6 +785,27 @@ async function clearPurchases() {{
     alert('Ошибка: ' + (data.error || 'неизвестная'));
   }}
 }}
+
+document.querySelectorAll('th.sortable').forEach(th => {{
+  th.addEventListener('click', () => {{
+    const key = th.dataset.key;
+    const tbody = document.querySelector('#purchases-table tbody');
+    const rows = Array.from(tbody.querySelectorAll('tr'));
+    const isDesc = th.classList.contains('sort-desc');
+    const newDir = isDesc ? 'asc' : 'desc';
+    document.querySelectorAll('th.sortable').forEach(h => {{
+      h.classList.remove('sort-asc', 'sort-desc');
+    }});
+    th.classList.add('sort-' + newDir);
+    const camelKey = key.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+    rows.sort((a, b) => {{
+      const va = parseFloat(a.dataset[camelKey]) || 0;
+      const vb = parseFloat(b.dataset[camelKey]) || 0;
+      return newDir === 'desc' ? vb - va : va - vb;
+    }});
+    rows.forEach(r => tbody.appendChild(r));
+  }});
+}});
 </script>
 </body></html>"""
 

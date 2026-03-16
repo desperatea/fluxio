@@ -22,9 +22,9 @@ KEY_FRESHNESS = "steam:freshness"
 # Кандидаты на арбитраж (Set: member=market_hash_name)
 KEY_CANDIDATES = "arb:candidates"
 
-# Кэш цены Steam (Hash: fields=median/lowest/volume, TTL 30 мин)
+# Кэш цены Steam (Hash: fields=median/lowest/volume, TTL 1 час)
 KEY_STEAM_PRICE = "steam:price:{}"  # .format(hash_name)
-STEAM_PRICE_TTL = 30 * 60          # 30 минут в секундах
+STEAM_PRICE_TTL = 60 * 60          # 1 час в секундах
 
 # Идемпотентность покупок (Set: member=product_id)
 KEY_PURCHASED_IDS = "buy:purchased_ids"

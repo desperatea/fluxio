@@ -120,6 +120,23 @@ class UpdaterWorker(BaseWorker):
         """
         redis_client = redis  # type alias для clarity
 
+        # ── Шаг 0: Ранняя проверка enrichment (до API-запросов) ──
+        # Если предмет не обогащён — нет смысла тратить прокси на priceoverview,
+        # он всё равно не пройдёт в кандидаты. Сразу отправляем в enricher.
+        async with UnitOfWork(async_session_factory) as uow:
+            item_pre = await uow.items.get_by_name(hash_name)
+            if item_pre is None:
+                logger.debug(f"Updater: предмет [{hash_name}] не найден в БД")
+                return
+            if not self._is_enrichment_fresh(item_pre):
+                await redis_client.sadd(KEY_ENRICH_QUEUE, hash_name)
+                await redis_client.srem(KEY_CANDIDATES, hash_name)
+                logger.debug(
+                    f"Updater: [{hash_name}] нет обогащения → "
+                    f"в очередь enricher (без API-запроса)"
+                )
+                return
+
         # ── Шаг 1: Получить текущую цену (priceoverview) ──
         cache_key = KEY_STEAM_PRICE.format(hash_name)
         cached = await redis_client.hgetall(cache_key)
@@ -188,35 +205,93 @@ class UpdaterWorker(BaseWorker):
                 await redis_client.srem(KEY_CANDIDATES, hash_name)
                 return
 
-            # Проверяем наличие обогащения (30д медиана из БД)
-            enrichment_fresh = self._is_enrichment_fresh(item)
-
-            if not enrichment_fresh:
-                # Нет обогащения или устарело → отправить в очередь enricher
-                await redis_client.sadd(KEY_ENRICH_QUEUE, hash_name)
-                await redis_client.srem(KEY_CANDIDATES, hash_name)
-                logger.debug(
-                    f"Updater: [{hash_name}] нет обогащения → "
-                    f"отправлен в очередь enricher"
-                )
-                return
-
-            # Есть свежее обогащение — используем 30д медиану из БД
+            # Enrichment уже проверен в шаге 0 — используем 30д медиану из БД
             steam_median_30d = float(item.steam_median_30d)
             steam_volume_7d = item.steam_volume_7d or 0
 
+            am = config.anti_manipulation
+
+            # ── Пункт 0: Данные ордеров (itemordershistogram) ──
+            if item.steam_item_nameid:
+                histogram = await self._steam.get_item_orders_histogram(
+                    item.steam_item_nameid,
+                )
+                if histogram:
+                    # sell_order_count — кол-во листингов на продажу
+                    sell_count = histogram.get("sell_order_count")
+                    if isinstance(sell_count, str):
+                        sell_count = int(sell_count.replace(",", ""))
+                    item.steam_sell_listings = sell_count
+
+                    # highest_buy_order — в центах → USD
+                    hbo = histogram.get("highest_buy_order")
+                    if hbo:
+                        item.steam_buy_order_price = int(hbo) / 100.0
+
+                    await uow.commit()
+
+                    logger.debug(
+                        f"Updater: [{hash_name}] ордера: "
+                        f"листингов={sell_count}, "
+                        f"buy_order=${item.steam_buy_order_price or 0:.4f}"
+                    )
+
+            # Проверка мин. листингов на Steam Market
+            steam_sell_listings = item.steam_sell_listings or 0
+            if steam_sell_listings < am.min_steam_listings:
+                logger.info(
+                    f"Updater: [{hash_name}] отклонён — "
+                    f"мало листингов на Steam: {steam_sell_listings} "
+                    f"< {am.min_steam_listings}"
+                )
+                await redis_client.srem(KEY_CANDIDATES, hash_name)
+                return
+
+            # ── Пункт 1: Ratio check — цена листинга vs медиана 30д ──
+            if steam_median_30d > 0:
+                price_to_median_ratio = steam_current / steam_median_30d
+                if price_to_median_ratio > am.max_price_to_median_ratio:
+                    logger.info(
+                        f"Updater: [{hash_name}] отклонён — "
+                        f"цена/медиана={price_to_median_ratio:.1f}x "
+                        f"(steam=${steam_current:.4f}, "
+                        f"median_30d=${steam_median_30d:.4f}, "
+                        f"порог={am.max_price_to_median_ratio}x)"
+                    )
+                    await redis_client.srem(KEY_CANDIDATES, hash_name)
+                    return
+
+            # ── Пункт 5: Скорректированная эталонная цена ──
+            # Если цена листинга выше медианы >50% — blend для расчёта дисконта
+            if steam_median_30d > 0 and steam_current / steam_median_30d > 1.5:
+                reference_price = steam_current * 0.7 + steam_median_30d * 0.3
+            else:
+                reference_price = steam_current
+
             fee = config.fees.steam_fee_percent / 100
-            net_steam = steam_current * (1 - fee)
+            net_steam = reference_price * (1 - fee)
             discount = (net_steam - item_price) / net_steam * 100
 
             # Проверяем ликвидность (объём продаж за 7 дней)
             volume_ok = steam_volume_7d >= config.trading.min_sales_volume_7d
 
             # Проверка анти-манипуляции (данные из enricher)
-            am = config.anti_manipulation
             spike_ratio = item.price_spike_ratio
             price_cv = item.price_stability_cv
             sales_at_price = item.sales_at_current_price
+
+            # ── Пункт 2: Пересчёт sales@price из истории при расхождении цены ──
+            if steam_median_30d > 0 and steam_current / steam_median_30d > 1.5:
+                fresh_sales = await self._recalc_sales_at_price(
+                    uow._session, hash_name, steam_current,
+                )
+                if fresh_sales is not None:
+                    logger.debug(
+                        f"Updater: [{hash_name}] пересчёт sales@price: "
+                        f"{sales_at_price} → {fresh_sales} "
+                        f"(steam=${steam_current:.4f})"
+                    )
+                    sales_at_price = fresh_sales
 
             spike_ok = (spike_ratio or 0) <= am.max_spike_ratio
             cv_ok = (price_cv or 0) <= am.max_price_cv
@@ -265,6 +340,30 @@ class UpdaterWorker(BaseWorker):
             f"Updater: обновлён [{hash_name}] "
             f"steam=${steam_current:.4f}"
         )
+
+    @staticmethod
+    async def _recalc_sales_at_price(
+        session: object, hash_name: str, target_price: float,
+    ) -> int | None:
+        """Пересчитать sales_at_current_price из сохранённой истории продаж.
+
+        Используется когда текущая цена листинга значительно отличается
+        от цены на момент обогащения (stale данные enricher).
+        """
+        from sqlalchemy import func, select
+
+        from fluxio.db.models import SteamSalesHistory
+
+        low = target_price * 0.8
+        high = target_price * 1.2
+        stmt = (
+            select(func.coalesce(func.sum(SteamSalesHistory.volume), 0))
+            .where(SteamSalesHistory.hash_name == hash_name)
+            .where(SteamSalesHistory.price_usd >= low)
+            .where(SteamSalesHistory.price_usd <= high)
+        )
+        result = await session.execute(stmt)
+        return result.scalar()
 
     @staticmethod
     def _is_enrichment_fresh(item: object) -> bool:
