@@ -413,6 +413,9 @@ a:hover { color: var(--text); }
 .stat-sub { font-size: 12px; color: var(--text-muted); }
 .progress-bar { height: 6px; background: var(--bg-elevated); border-radius: 3px; margin-top: 8px; overflow: hidden; }
 .progress-fill { height: 100%; border-radius: 3px; background: linear-gradient(90deg, var(--success), #4ade80); transition: width 0.6s ease; }
+.chart-container { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; }
+.chart-container canvas { max-height: 260px; }
+.chart-title { font-size: 14px; font-weight: 600; color: var(--text-primary); margin-bottom: 12px; }
 
 /* ─── Tables ──────────────────────────────────────────────────────────── */
 .table-wrap {
@@ -1253,6 +1256,51 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
 
         system_ok = cb_state == "closed"
 
+        # ── Балансы платформ ──
+        cs2dt_balance: float | None = None
+        c5game_balance: float | None = None
+        spent_today = 0.0
+        total_spent_all = 0.0
+        try:
+            if _container:
+                from fluxio.api.cs2dt_client import CS2DTClient
+                if _container.is_initialized(CS2DTClient):
+                    cs2dt = await _container.get(CS2DTClient)
+                    bal_data = await cs2dt.get_balance()
+                    cs2dt_balance = float(bal_data.get("data", 0))
+        except Exception:
+            pass
+
+        try:
+            if _container:
+                from fluxio.api.c5game_client import C5GameClient
+                if _container.is_registered(C5GameClient) and _container.is_initialized(C5GameClient):
+                    c5 = await _container.get(C5GameClient)
+                    bal_data = await c5.get_balance()
+                    c5game_balance = float(bal_data.get("balance", 0))
+        except Exception:
+            pass
+
+        try:
+            from fluxio.db.session import async_session_factory
+            from fluxio.db.unit_of_work import UnitOfWork
+            from sqlalchemy import func as sa_func, select as sa_sel
+
+            from fluxio.db.models import Purchase
+            async with UnitOfWork(async_session_factory) as uow:
+                spent_today = await uow.purchases.get_today_spent()
+                result = await uow._session.execute(
+                    sa_sel(sa_func.coalesce(sa_func.sum(Purchase.price_usd), 0))
+                    .where(Purchase.dry_run == False)
+                    .where(Purchase.status.in_(["pending", "success"]))
+                )
+                total_spent_all = float(result.scalar_one())
+        except Exception:
+            pass
+
+        daily_limit = config.trading.daily_limit_usd
+        daily_pct = min(round(spent_today / daily_limit * 100, 1), 100) if daily_limit > 0 else 0
+
         # ── Воркеры ──
         workers_html = ""
         if _container:
@@ -1315,6 +1363,29 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
     </div>
     <div class="stat-sub">Mode: {mode} &middot; Uptime: {uptime_str}</div>
     <div class="stat-sub">Discount: &ge;{config.trading.min_discount_percent}% &middot; Limit: ${config.trading.daily_limit_usd}</div>
+  </div>
+</div>
+
+<!-- Балансы платформ -->
+<div class="card" style="margin-bottom:20px">
+  <div class="card-header"><div class="card-title">Balances &amp; Spending</div></div>
+  <div class="grid" style="grid-template-columns:1fr 1fr 1fr;gap:16px">
+    <div style="padding:12px 0">
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:4px">CS2DT (HaloSkins)</div>
+      <div style="font-size:24px;font-weight:700;color:var(--accent)">{"$" + f"{cs2dt_balance:.2f}" if cs2dt_balance is not None else '<span style="color:var(--text-muted)">N/A</span>'}</div>
+      <div style="font-size:11px;color:var(--text-muted);margin-top:2px">T-Coin balance</div>
+    </div>
+    <div style="padding:12px 0">
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:4px">C5Game</div>
+      <div style="font-size:24px;font-weight:700;color:var(--accent)">{"$" + f"{c5game_balance:.2f}" if c5game_balance is not None else '<span style="color:var(--text-muted)">N/A</span>'}</div>
+      <div style="font-size:11px;color:var(--text-muted);margin-top:2px">Account balance</div>
+    </div>
+    <div style="padding:12px 0">
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:4px">Spending</div>
+      <div style="font-size:24px;font-weight:700;color:var(--warning)">${spent_today:.2f} <span style="font-size:13px;font-weight:400;color:var(--text-muted)">/ ${daily_limit:.0f} today</span></div>
+      <div class="progress-bar" style="margin-top:6px"><div class="progress-fill" style="width:{daily_pct}%;background:linear-gradient(90deg, var(--warning), #fb923c)"></div></div>
+      <div style="font-size:11px;color:var(--text-muted);margin-top:4px">All time: ${total_spent_all:.2f}</div>
+    </div>
   </div>
 </div>
 
@@ -1856,6 +1927,9 @@ document.querySelectorAll('th.sortable').forEach(th => {
         live_count = 0
         filtered_count = 0
         total_median_profit = 0.0
+        # Данные для графиков
+        by_day: dict[str, dict] = {}   # "2026-03-15" -> {count, spent, profit}
+        by_hour: dict[int, dict] = {}  # 0..23 -> {count, spent, profit}
 
         try:
             from urllib.parse import quote
@@ -1885,8 +1959,10 @@ document.querySelectorAll('th.sortable').forEach(th => {
                         continue
                     if p.status in ("success", "pending"):
                         total_spent += price
+                        p_profit = 0.0
                         if steam > 0 and price > 0:
-                            total_profit += steam * (1 - fee) - price
+                            p_profit = steam * (1 - fee) - price
+                            total_profit += p_profit
                         item_obj = items_cache.get(p.market_hash_name)
                         median = float(item_obj.steam_median_30d) if item_obj and item_obj.steam_median_30d else 0
                         if median > 0 and price > 0:
@@ -1895,6 +1971,21 @@ document.querySelectorAll('th.sortable').forEach(th => {
                             dry_count += 1
                         else:
                             live_count += 1
+
+                        # Агрегация для графиков
+                        if p.purchased_at:
+                            day_key = p.purchased_at.strftime("%Y-%m-%d")
+                            hour_key = p.purchased_at.hour
+                            if day_key not in by_day:
+                                by_day[day_key] = {"count": 0, "spent": 0.0, "profit": 0.0}
+                            by_day[day_key]["count"] += 1
+                            by_day[day_key]["spent"] += price
+                            by_day[day_key]["profit"] += p_profit
+                            if hour_key not in by_hour:
+                                by_hour[hour_key] = {"count": 0, "spent": 0.0, "profit": 0.0}
+                            by_hour[hour_key]["count"] += 1
+                            by_hour[hour_key]["spent"] += price
+                            by_hour[hour_key]["profit"] += p_profit
 
                 purchases = all_purchases[:200]
                 rows = []
@@ -1982,6 +2073,19 @@ document.querySelectorAll('th.sortable').forEach(th => {
         if not rows_html:
             rows_html = '<tr><td colspan="11" style="text-align:center;color:var(--text-muted);padding:32px">No purchases yet.</td></tr>'
 
+        # Сериализация данных для графиков
+        import json as _json
+        sorted_days = sorted(by_day.keys())
+        chart_day_labels = _json.dumps(sorted_days)
+        chart_day_counts = _json.dumps([by_day[d]["count"] for d in sorted_days])
+        chart_day_spent = _json.dumps([round(by_day[d]["spent"], 2) for d in sorted_days])
+        chart_day_profit = _json.dumps([round(by_day[d]["profit"], 2) for d in sorted_days])
+
+        chart_hour_labels = _json.dumps([f"{h:02d}:00" for h in range(24)])
+        chart_hour_counts = _json.dumps([by_hour.get(h, {}).get("count", 0) for h in range(24)])
+        chart_hour_spent = _json.dumps([round(by_hour.get(h, {}).get("spent", 0), 2) for h in range(24)])
+        chart_hour_profit = _json.dumps([round(by_hour.get(h, {}).get("profit", 0), 2) for h in range(24)])
+
         profit_color = "var(--success)" if total_profit >= 0 else "var(--danger)"
         median_profit_color = "var(--success)" if total_median_profit >= 0 else "var(--danger)"
 
@@ -2008,6 +2112,18 @@ document.querySelectorAll('th.sortable').forEach(th => {
   <div class="stat-card">
     <div class="stat-label">Profit (Median 30d)</div>
     <div class="stat-value" style="color:{median_profit_color}">${total_median_profit:.2f}</div>
+  </div>
+</div>
+
+<!-- Графики покупок -->
+<div class="grid" style="grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px">
+  <div class="chart-container">
+    <div class="chart-title">Покупки по дням</div>
+    <canvas id="chartByDay" height="220"></canvas>
+  </div>
+  <div class="chart-container">
+    <div class="chart-title">Активность по часам</div>
+    <canvas id="chartByHour" height="220"></canvas>
   </div>
 </div>
 
@@ -2067,9 +2183,162 @@ document.querySelectorAll('th.sortable').forEach(th => {
     rows.forEach(r => tbody.appendChild(r));
   });
 });
+
+// ── Графики покупок ──
+const chartDefaults = {
+  color: '#94a3b8',
+  borderColor: 'rgba(255,255,255,0.06)',
+};
+Chart.defaults.color = chartDefaults.color;
+Chart.defaults.borderColor = chartDefaults.borderColor;
+
+const tooltipStyle = {
+  backgroundColor: '#1e2538',
+  titleColor: '#e2e8f0',
+  bodyColor: '#e2e8f0',
+  borderColor: '#2a3348',
+  borderWidth: 1,
+  padding: 10,
+  cornerRadius: 8,
+};
+
+// График по дням
+const dayLabels = """ + chart_day_labels + """;
+const dayCounts = """ + chart_day_counts + """;
+const daySpent  = """ + chart_day_spent + """;
+const dayProfit = """ + chart_day_profit + """;
+
+if (dayLabels.length > 0) {
+  new Chart(document.getElementById('chartByDay'), {
+    type: 'bar',
+    data: {
+      labels: dayLabels.map(d => { const parts = d.split('-'); return parts[2] + '.' + parts[1]; }),
+      datasets: [
+        {
+          label: 'Кол-во',
+          data: dayCounts,
+          backgroundColor: 'rgba(99, 102, 241, 0.7)',
+          borderRadius: 4,
+          yAxisID: 'y',
+          order: 2,
+        },
+        {
+          label: 'Потрачено $',
+          data: daySpent,
+          type: 'line',
+          borderColor: '#f59e0b',
+          backgroundColor: 'rgba(245, 158, 11, 0.1)',
+          borderWidth: 2,
+          pointRadius: 3,
+          pointBackgroundColor: '#f59e0b',
+          fill: true,
+          tension: 0.3,
+          yAxisID: 'y1',
+          order: 1,
+        },
+        {
+          label: 'Профит $',
+          data: dayProfit,
+          type: 'line',
+          borderColor: '#22c55e',
+          borderWidth: 2,
+          pointRadius: 3,
+          pointBackgroundColor: '#22c55e',
+          borderDash: [4, 3],
+          tension: 0.3,
+          yAxisID: 'y1',
+          order: 0,
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { position: 'bottom', labels: { boxWidth: 12, padding: 16, usePointStyle: true } },
+        tooltip: tooltipStyle,
+      },
+      scales: {
+        x: { grid: { display: false } },
+        y:  { position: 'left', title: { display: true, text: 'Кол-во' }, beginAtZero: true, ticks: { stepSize: 1 } },
+        y1: { position: 'right', title: { display: true, text: '$' }, beginAtZero: true, grid: { drawOnChartArea: false } },
+      }
+    }
+  });
+}
+
+// График по часам
+const hourLabels  = """ + chart_hour_labels + """;
+const hourCounts  = """ + chart_hour_counts + """;
+const hourSpent   = """ + chart_hour_spent + """;
+const hourProfit  = """ + chart_hour_profit + """;
+
+new Chart(document.getElementById('chartByHour'), {
+  type: 'bar',
+  data: {
+    labels: hourLabels,
+    datasets: [
+      {
+        label: 'Кол-во',
+        data: hourCounts,
+        backgroundColor: hourCounts.map((v, i) => {
+          const max = Math.max(...hourCounts);
+          const alpha = max > 0 ? 0.3 + 0.7 * (v / max) : 0.3;
+          return 'rgba(99, 102, 241, ' + alpha + ')';
+        }),
+        borderRadius: 4,
+        yAxisID: 'y',
+        order: 2,
+      },
+      {
+        label: 'Потрачено $',
+        data: hourSpent,
+        type: 'line',
+        borderColor: '#f59e0b',
+        backgroundColor: 'rgba(245, 158, 11, 0.1)',
+        borderWidth: 2,
+        pointRadius: 2,
+        pointBackgroundColor: '#f59e0b',
+        fill: true,
+        tension: 0.3,
+        yAxisID: 'y1',
+        order: 1,
+      },
+      {
+        label: 'Профит $',
+        data: hourProfit,
+        type: 'line',
+        borderColor: '#22c55e',
+        borderWidth: 2,
+        pointRadius: 2,
+        pointBackgroundColor: '#22c55e',
+        borderDash: [4, 3],
+        tension: 0.3,
+        yAxisID: 'y1',
+        order: 0,
+      }
+    ]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    interaction: { mode: 'index', intersect: false },
+    plugins: {
+      legend: { position: 'bottom', labels: { boxWidth: 12, padding: 16, usePointStyle: true } },
+      tooltip: tooltipStyle,
+    },
+    scales: {
+      x: { grid: { display: false } },
+      y:  { position: 'left', title: { display: true, text: 'Кол-во' }, beginAtZero: true, ticks: { stepSize: 1 } },
+      y1: { position: 'right', title: { display: true, text: '$' }, beginAtZero: true, grid: { drawOnChartArea: false } },
+    }
+  }
+});
 </script>"""
 
-        return _layout("Purchases", "/purchases", content) + extra_js
+        return _layout("Purchases", "/purchases", content,
+                       extra_head='<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>') + extra_js
 
     return app
 

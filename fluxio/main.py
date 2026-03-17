@@ -137,6 +137,7 @@ class Bot:
         self._workers = [scanner, updater, enricher, buyer]
 
         # Регистрируем воркеры и клиенты для дашборда
+        self._container.register_instance(CS2DTClient, cs2dt_client)
         self._container.register_instance(SteamClient, steam_client)
         self._container.register_instance(ScannerWorker, scanner)
         self._container.register_instance(UpdaterWorker, updater)
