@@ -15,6 +15,7 @@ class WorkerStatus:
     def __init__(self, name: str) -> None:
         self.name = name
         self.running: bool = False
+        self.paused: bool = False
         self.last_run_at: datetime | None = None
         self.last_error: str | None = None
         self.cycles: int = 0
@@ -25,6 +26,7 @@ class WorkerStatus:
         return {
             "name": self.name,
             "running": self.running,
+            "paused": self.paused,
             "last_run_at": self.last_run_at.isoformat() if self.last_run_at else None,
             "last_error": self.last_error,
             "cycles": self.cycles,
@@ -42,6 +44,8 @@ class BaseWorker:
     def __init__(self, name: str, interval_seconds: int) -> None:
         self._status = WorkerStatus(name)
         self._interval = interval_seconds
+        self._resume_event = asyncio.Event()
+        self._resume_event.set()  # По умолчанию не на паузе
 
     @property
     def status(self) -> WorkerStatus:
@@ -55,12 +59,33 @@ class BaseWorker:
         """Один рабочий цикл — реализуется подклассом."""
         raise NotImplementedError
 
+    def pause(self) -> None:
+        """Поставить воркер на паузу."""
+        self._resume_event.clear()
+        self._status.paused = True
+        logger.info(f"Воркер [{self._status.name}] поставлен на паузу")
+
+    def resume(self) -> None:
+        """Возобновить работу воркера."""
+        self._resume_event.set()
+        self._status.paused = False
+        logger.info(f"Воркер [{self._status.name}] возобновлён")
+
     async def run(self) -> None:
         """Бесконечный цикл воркера с обработкой ошибок."""
         self._status.running = True
         logger.info(f"Воркер [{self._status.name}] запущен (интервал: {self._interval}с)")
 
         while self._status.running:
+            # Ожидание снятия паузы (если на паузе)
+            try:
+                await self._resume_event.wait()
+            except asyncio.CancelledError:
+                break
+
+            if not self._status.running:
+                break
+
             try:
                 await self.run_cycle()
                 self._status.last_run_at = datetime.now(timezone.utc)
@@ -87,3 +112,4 @@ class BaseWorker:
     def stop(self) -> None:
         """Запросить остановку воркера."""
         self._status.running = False
+        self._resume_event.set()  # Разблокировать wait() при остановке

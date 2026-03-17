@@ -28,48 +28,934 @@ _started_at = datetime.now(timezone.utc)
 _container: ServiceContainer | None = None
 
 
+# ─── Дизайн-система ─────────────────────────────────────────────────────────
+
+
 def _css() -> str:
-    """Общие CSS стили для всех страниц."""
+    """Полная CSS дизайн-система Fluxio — адаптивная, TG Mini App ready."""
     return """
-  body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0f1923; color: #c7d5e0;
-         margin: 0; padding: 20px; }
-  h1 { color: #66c0f4; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
-  .card { background: #1b2838; border-radius: 8px; padding: 20px; border: 1px solid #2a475e; }
-  .card h2 { color: #66c0f4; margin: 0 0 12px; font-size: 16px; }
-  .metric { margin: 6px 0; }
-  .label { color: #8f98a0; }
-  .status { font-size: 20px; font-weight: 600; }
-  nav { margin-bottom: 20px; }
-  nav a { color: #66c0f4; margin-right: 16px; text-decoration: none; }
-  nav a:hover { text-decoration: underline; }
-  table { width: 100%; border-collapse: collapse; background: #1b2838; border-radius: 8px; }
-  th { background: #2a475e; color: #66c0f4; padding: 10px 14px; text-align: left; }
-  td { padding: 8px 14px; border-bottom: 1px solid #2a475e; color: #c7d5e0; }
-  tr:last-child td { border-bottom: none; }
-  tr:hover td { background: #243547; }
-  .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px; }
-  .badge-ok { background: #1a472a; color: #4caf50; }
-  .badge-warn { background: #3d2b00; color: #ff9800; }
-  .badge-err { background: #3d0000; color: #f44336; }
-  """
+/* ═══════════════════════════════════════════════════════════════════════════
+   Design Tokens
+   ═══════════════════════════════════════════════════════════════════════════ */
+:root {
+  /* Фон */
+  --bg: #080b14;
+  --bg-surface: #0f1219;
+  --bg-elevated: #161b27;
+  --bg-hover: #1c2233;
+  --bg-sidebar: #0a0e17;
+
+  /* Границы */
+  --border: #1a1f2e;
+  --border-light: #252d3d;
+
+  /* Текст */
+  --text: #f1f5f9;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
+
+  /* Акценты */
+  --accent: #3b82f6;
+  --accent-hover: #2563eb;
+  --accent-glow: rgba(59, 130, 246, 0.15);
+  --accent-gradient: linear-gradient(135deg, #3b82f6, #8b5cf6);
+
+  /* Статусы */
+  --success: #22c55e;
+  --success-bg: rgba(34, 197, 94, 0.1);
+  --danger: #ef4444;
+  --danger-bg: rgba(239, 68, 68, 0.1);
+  --warning: #f59e0b;
+  --warning-bg: rgba(245, 158, 11, 0.1);
+
+  /* Layout */
+  --sidebar-w: 240px;
+  --topbar-h: 60px;
+  --mobile-nav-h: 64px;
+  --radius: 12px;
+  --radius-sm: 8px;
+  --radius-xs: 6px;
+
+  /* Шрифт */
+  --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+
+  /* Тени */
+  --shadow: 0 1px 3px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2);
+  --shadow-lg: 0 4px 12px rgba(0,0,0,0.4);
+
+  /* Telegram Mini App — CSS-переменные перезапишут, если запущено в TG */
+  --tg-viewport-height: 100dvh;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Reset & Base
+   ═══════════════════════════════════════════════════════════════════════════ */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html {
+  font-family: var(--font);
+  font-size: 14px;
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body { background: var(--bg); min-height: 100dvh; overflow-x: hidden; }
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { color: var(--text); }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   App Layout
+   ═══════════════════════════════════════════════════════════════════════════ */
+.app {
+  display: flex;
+  min-height: 100dvh;
+}
+
+/* ─── Sidebar ─────────────────────────────────────────────────────────── */
+.sidebar {
+  position: fixed;
+  top: 0; left: 0;
+  width: var(--sidebar-w);
+  height: 100dvh;
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  z-index: 100;
+  transition: transform 0.25s ease;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.sidebar-logo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 20px 20px 16px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.sidebar-logo img { flex-shrink: 0; width: 32px; height: 32px; object-fit: contain; }
+
+.sidebar-logo span {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.3px;
+  color: var(--text);
+}
+
+.sidebar-section {
+  padding: 16px 12px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--text-muted);
+}
+
+.sidebar-nav { display: flex; flex-direction: column; gap: 2px; padding: 0 8px; flex: 1; }
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: 14px;
+  font-weight: 500;
+  transition: all 0.15s;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  min-height: 40px;
+}
+
+.nav-item:hover { background: var(--bg-hover); color: var(--text); }
+
+.nav-item.active {
+  background: var(--accent-glow);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.nav-item.active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  width: 3px;
+  height: 24px;
+  background: var(--accent);
+  border-radius: 0 3px 3px 0;
+}
+
+.nav-item { position: relative; }
+
+.nav-item i, .nav-item svg { width: 20px; height: 20px; flex-shrink: 0; }
+
+.nav-spacer { flex: 1; }
+
+/* ─── Top Bar ─────────────────────────────────────────────────────────── */
+.main-area {
+  flex: 1;
+  margin-left: var(--sidebar-w);
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
+}
+
+.topbar {
+  position: sticky;
+  top: 0;
+  height: var(--topbar-h);
+  background: rgba(8, 11, 20, 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 24px;
+  gap: 16px;
+  z-index: 50;
+  flex-shrink: 0;
+}
+
+.topbar-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 14px;
+  min-width: 260px;
+  max-width: 400px;
+  flex: 1;
+}
+
+.topbar-search i { color: var(--text-muted); width: 18px; height: 18px; }
+
+.topbar-search input {
+  background: none;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font-size: 13px;
+  font-family: var(--font);
+  width: 100%;
+}
+
+.topbar-search input::placeholder { color: var(--text-muted); }
+
+.topbar-spacer { flex: 1; }
+
+.topbar-icons { display: flex; align-items: center; gap: 6px; }
+
+.topbar-icon {
+  width: 36px; height: 36px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.topbar-icon:hover { background: var(--bg-hover); color: var(--text); }
+
+.topbar-icon i, .topbar-icon svg { width: 18px; height: 18px; }
+
+.mode-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.15s;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.mode-live { background: var(--danger-bg); color: var(--danger); border: 1px solid rgba(239,68,68,0.3); }
+.mode-dry { background: var(--success-bg); color: var(--success); border: 1px solid rgba(34,197,94,0.3); }
+
+/* Burger (мобильный) */
+.burger {
+  display: none;
+  width: 40px; height: 40px;
+  align-items: center; justify-content: center;
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* ─── Content ─────────────────────────────────────────────────────────── */
+.content {
+  flex: 1;
+  padding: 24px;
+  max-width: 1400px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.page-title {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 20px;
+}
+
+/* ─── Overlay (мобильный sidebar) ─────────────────────────────────────── */
+.sidebar-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  z-index: 99;
+}
+
+/* ─── Mobile Bottom Nav ───────────────────────────────────────────────── */
+.mobile-nav {
+  display: none;
+  position: fixed;
+  bottom: 0; left: 0; right: 0;
+  height: var(--mobile-nav-h);
+  padding-bottom: env(safe-area-inset-bottom, 0);
+  background: var(--bg-sidebar);
+  border-top: 1px solid var(--border);
+  z-index: 100;
+  justify-content: space-around;
+  align-items: center;
+}
+
+.mobile-nav-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 12px;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 500;
+  text-decoration: none;
+  -webkit-tap-highlight-color: transparent;
+  min-width: 56px;
+}
+
+.mobile-nav-item.active { color: var(--accent); }
+.mobile-nav-item i { width: 22px; height: 22px; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   UI Components
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ─── Cards ───────────────────────────────────────────────────────────── */
+.grid { display: grid; gap: 16px; }
+.grid-2 { grid-template-columns: repeat(2, 1fr); }
+.grid-3 { grid-template-columns: repeat(3, 1fr); }
+.grid-4 { grid-template-columns: repeat(4, 1fr); }
+.grid-auto { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+
+.card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+}
+
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.card-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.card-value {
+  font-size: 32px;
+  font-weight: 700;
+  color: var(--text);
+  line-height: 1.1;
+}
+
+.card-sub {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 6px;
+}
+
+/* Stat Card (компактная) */
+.stat-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.stat-label { font-size: 12px; color: var(--text-muted); font-weight: 500; }
+.stat-value { font-size: 24px; font-weight: 700; line-height: 1; }
+.stat-sub { font-size: 12px; color: var(--text-muted); }
+.progress-bar { height: 6px; background: var(--bg-elevated); border-radius: 3px; margin-top: 8px; overflow: hidden; }
+.progress-fill { height: 100%; border-radius: 3px; background: linear-gradient(90deg, var(--success), #4ade80); transition: width 0.6s ease; }
+
+/* ─── Tables ──────────────────────────────────────────────────────────── */
+.table-wrap {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.table-wrap table { width: 100%; border-collapse: collapse; }
+
+.table-wrap thead th {
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 12px 16px;
+  text-align: left;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--border);
+}
+
+.table-wrap tbody td {
+  padding: 10px 16px;
+  font-size: 13px;
+  color: var(--text);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.table-wrap tbody tr:last-child td { border-bottom: none; }
+.table-wrap tbody tr:hover td { background: var(--bg-hover); }
+
+/* Sortable */
+th.sortable { cursor: pointer; user-select: none; }
+th.sortable:hover { color: var(--text); }
+th.sortable::after { content: ' \2195'; opacity: 0.3; font-size: 11px; }
+th.sort-desc::after { content: ' \2193'; opacity: 1; }
+th.sort-asc::after { content: ' \2191'; opacity: 1; }
+
+/* Scrollable table на мобильных */
+.table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+/* ─── Badges ──────────────────────────────────────────────────────────── */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+
+.badge-success { background: var(--success-bg); color: var(--success); }
+.badge-danger { background: var(--danger-bg); color: var(--danger); }
+.badge-warning { background: var(--warning-bg); color: var(--warning); }
+.badge-info { background: var(--accent-glow); color: var(--accent); }
+.badge-muted { background: rgba(100,116,139,0.15); color: var(--text-muted); }
+
+/* ─── Buttons ─────────────────────────────────────────────────────────── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: var(--radius-xs);
+  border: none;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: var(--font);
+  cursor: pointer;
+  transition: all 0.15s;
+  -webkit-tap-highlight-color: transparent;
+  min-height: 36px;
+}
+
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover { background: var(--accent-hover); }
+
+.btn-success { background: var(--success); color: #fff; }
+.btn-success:hover { opacity: 0.9; }
+
+.btn-danger { background: var(--danger-bg); color: var(--danger); border: 1px solid rgba(239,68,68,0.3); }
+.btn-danger:hover { background: var(--danger); color: #fff; }
+
+.btn-ghost { background: transparent; color: var(--text-secondary); border: 1px solid var(--border); }
+.btn-ghost:hover { background: var(--bg-hover); color: var(--text); }
+
+/* ─── Tabs ────────────────────────────────────────────────────────────── */
+.tabs {
+  display: flex;
+  gap: 0;
+  margin-bottom: 16px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.tab {
+  padding: 8px 18px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  transition: all 0.15s;
+  user-select: none;
+  white-space: nowrap;
+  -webkit-tap-highlight-color: transparent;
+  min-height: 38px;
+}
+
+.tab:first-child { border-radius: var(--radius-xs) 0 0 var(--radius-xs); }
+.tab:last-child { border-radius: 0 var(--radius-xs) var(--radius-xs) 0; }
+.tab:not(:last-child) { border-right: none; }
+.tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.tab:hover:not(.active) { background: var(--bg-hover); color: var(--text); }
+
+.tab .count {
+  font-size: 10px;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.1);
+}
+
+.tab.active .count { background: rgba(255,255,255,0.2); }
+
+/* ─── Pill Toggles ────────────────────────────────────────────────────── */
+.pills { display: flex; gap: 8px; flex-wrap: wrap; }
+
+.pill {
+  padding: 6px 14px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.pill.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.pill:hover:not(.active) { border-color: var(--border-light); color: var(--text); }
+
+/* ─── Metric Row ──────────────────────────────────────────────────────── */
+.metric-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 0;
+}
+
+.metric-row + .metric-row { border-top: 1px solid var(--border); }
+.metric-label { color: var(--text-muted); font-size: 13px; }
+.metric-value { color: var(--text); font-weight: 600; font-size: 13px; }
+
+/* ─── Charts Container ────────────────────────────────────────────────── */
+.chart-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+}
+
+.chart-card canvas { max-height: 260px; }
+
+/* ─── Worker Card ─────────────────────────────────────────────────────── */
+.worker-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.worker-dot {
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.worker-dot.running { background: var(--success); box-shadow: 0 0 8px var(--success); }
+.worker-dot.paused  { background: var(--warning); box-shadow: 0 0 8px var(--warning); }
+.worker-dot.stopped { background: var(--danger); }
+
+.worker-info { flex: 1; min-width: 0; }
+.worker-name { font-weight: 600; font-size: 14px; }
+.worker-meta { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+
+.worker-btn {
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 6px 10px;
+  font-size: 12px;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+.worker-btn:hover { background: var(--bg-elevated); color: var(--text-primary); border-color: var(--border-light); }
+
+/* ─── Item Card (Catalog) ─────────────────────────────────────────────── */
+.item-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  transition: border-color 0.15s;
+}
+
+.item-card:hover { border-color: var(--border-light); }
+
+.item-img {
+  width: 100%;
+  height: 120px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-elevated);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.item-img img { max-width: 100%; max-height: 100%; object-fit: contain; }
+
+.item-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.item-rarity { font-size: 11px; color: var(--text-muted); }
+
+.item-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: auto;
+}
+
+.item-price { font-size: 16px; font-weight: 700; color: var(--text); }
+
+.btn-buy {
+  padding: 6px 16px;
+  border-radius: var(--radius-xs);
+  background: var(--success);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  border: none;
+  cursor: pointer;
+}
+
+/* ─── Filter Panel ────────────────────────────────────────────────────── */
+.filter-panel {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+}
+
+.filter-panel h3 {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 12px;
+}
+
+.filter-group { margin-bottom: 16px; }
+
+.filter-label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+}
+
+input[type="range"] {
+  width: 100%;
+  -webkit-appearance: none;
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  outline: none;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px; height: 16px;
+  background: var(--accent);
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+/* ─── Log Viewer ──────────────────────────────────────────────────────── */
+.log-container {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  height: calc(100dvh - var(--topbar-h) - 160px);
+  overflow-y: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.log-line { white-space: pre-wrap; word-break: break-all; padding: 1px 0; }
+.log-ERROR { color: var(--danger); }
+.log-WARNING { color: var(--warning); }
+.log-INFO { color: var(--success); }
+.log-DEBUG { color: var(--text-muted); }
+
+.log-status {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 10px;
+}
+
+/* ─── Empty State ─────────────────────────────────────────────────────── */
+.empty {
+  text-align: center;
+  padding: 48px 24px;
+  color: var(--text-muted);
+}
+
+.empty i { width: 48px; height: 48px; margin-bottom: 16px; opacity: 0.3; }
+.empty p { font-size: 14px; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Responsive
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Планшет */
+@media (max-width: 1024px) {
+  .grid-4 { grid-template-columns: repeat(2, 1fr); }
+  .grid-3 { grid-template-columns: repeat(2, 1fr); }
+  .content { padding: 16px; }
+}
+
+/* Мобильный */
+@media (max-width: 768px) {
+  .sidebar { transform: translateX(-100%); }
+  .sidebar.open { transform: translateX(0); }
+  .sidebar-overlay.open { display: block; }
+
+  .main-area { margin-left: 0; }
+
+  .burger { display: flex; }
+
+  .mobile-nav { display: flex; }
+
+  .content {
+    padding: 16px 12px;
+    padding-bottom: calc(var(--mobile-nav-h) + env(safe-area-inset-bottom, 0) + 16px);
+  }
+
+  .topbar-search { min-width: 0; flex: 0 1 160px; }
+  .topbar-search input { font-size: 12px; }
+
+  .grid-4, .grid-3, .grid-2 { grid-template-columns: 1fr; }
+  .grid-auto { grid-template-columns: 1fr; }
+
+  .page-title { font-size: 18px; }
+
+  .stat-value { font-size: 20px; }
+
+  .table-wrap { border-radius: var(--radius-sm); }
+
+  .catalog-layout { grid-template-columns: 1fr !important; }
+  .filter-panel { display: none; }
+  .filter-panel.open { display: block; }
+
+  .items-grid { grid-template-columns: repeat(2, 1fr) !important; }
+}
+
+/* Маленький мобильный / TG Mini App */
+@media (max-width: 480px) {
+  :root {
+    --topbar-h: 52px;
+    --radius: 10px;
+  }
+
+  html { font-size: 13px; }
+  body { padding-top: env(safe-area-inset-top, 0); }
+
+  .topbar { padding: 0 10px; gap: 8px; }
+  .topbar-search { padding: 6px 10px; flex: 1 1 auto; }
+  .topbar-icons { gap: 2px; }
+  .topbar-icon { width: 32px; height: 32px; }
+  .mode-toggle { padding: 4px 8px; font-size: 10px; }
+
+  .content { padding: 12px 8px; }
+  .items-grid { grid-template-columns: repeat(2, 1fr) !important; gap: 8px !important; }
+}
+
+@media (max-width: 360px) {
+  .items-grid { grid-template-columns: 1fr !important; }
+  .topbar-icons { display: none; }
+}
+"""
 
 
-def _nav(current: str = "") -> str:
-    """Навигационное меню."""
-    links = [
-        ("/", "Главная"),
-        ("/items", "Каталог"),
-        ("/candidates", "Кандидаты"),
-        ("/purchases", "Покупки"),
-        ("/admin/", "Admin"),
-        ("/admin/logs", "Логи"),
+# ─── SVG Logo ────────────────────────────────────────────────────────────────
+
+
+_LOGO_HTML = '<img src="/static/icon.png" alt="Fluxio" width="32" height="32">'
+
+
+# ─── Layout Helpers ──────────────────────────────────────────────────────────
+
+
+def _sidebar(current: str) -> str:
+    """Боковая панель навигации."""
+    nav_items = [
+        ("admin", "/", "activity", "Service Status"),
+        ("admin", "/admin/logs", "file-text", "Logs"),
+        ("user", "/items", "grid-3x3", "Catalog"),
+        ("user", "/candidates", "target", "Candidates"),
+        ("user", "/purchases", "shopping-cart", "Purchases"),
     ]
-    parts = []
-    for href, label in links:
-        active = ' style="font-weight:bold"' if href == current else ""
-        parts.append(f'<a href="{href}"{active}>{label}</a>')
-    return "<nav>" + "".join(parts) + "</nav>"
+
+    items_html = ""
+    current_section = ""
+    for section, href, icon, label in nav_items:
+        if section != current_section:
+            section_label = "Admin" if section == "admin" else "Trading"
+            items_html += f'<div class="sidebar-section">{section_label}</div>'
+            current_section = section
+        active = " active" if href == current else ""
+        items_html += (
+            f'<a href="{href}" class="nav-item{active}">'
+            f'<i data-lucide="{icon}"></i> {label}</a>'
+        )
+
+    return f"""<aside class="sidebar" id="sidebar">
+  <div class="sidebar-logo">{_LOGO_HTML}<span>Fluxio</span></div>
+  <nav class="sidebar-nav">{items_html}</nav>
+</aside>
+<div class="sidebar-overlay" id="sidebar-overlay" onclick="toggleSidebar()"></div>"""
+
+
+def _topbar() -> str:
+    """Верхняя панель."""
+    mode = config.trading.dry_run
+    mode_class = "mode-dry" if mode else "mode-live"
+    mode_label = "DRY RUN" if mode else "LIVE"
+    return f"""<header class="topbar">
+  <div class="burger" onclick="toggleSidebar()"><i data-lucide="menu"></i></div>
+  <div class="topbar-search">
+    <i data-lucide="search"></i>
+    <input type="text" placeholder="Search..." id="globalSearch">
+  </div>
+  <div class="topbar-spacer"></div>
+  <div class="topbar-icons">
+    <div class="topbar-icon"><i data-lucide="bell"></i></div>
+    <div class="topbar-icon"><i data-lucide="message-square"></i></div>
+    <div class="topbar-icon"><i data-lucide="bookmark"></i></div>
+  </div>
+  <div class="mode-toggle {mode_class}">{mode_label}</div>
+</header>"""
+
+
+def _mobile_nav(current: str) -> str:
+    """Нижняя мобильная навигация."""
+    items = [
+        ("/", "activity", "Status"),
+        ("/items", "grid-3x3", "Catalog"),
+        ("/candidates", "target", "Candidates"),
+        ("/purchases", "shopping-cart", "Purchases"),
+        ("/admin/logs", "file-text", "Logs"),
+    ]
+    html = ""
+    for href, icon, label in items:
+        active = " active" if href == current else ""
+        html += (
+            f'<a href="{href}" class="mobile-nav-item{active}">'
+            f'<i data-lucide="{icon}"></i>{label}</a>'
+        )
+    return f'<nav class="mobile-nav">{html}</nav>'
+
+
+def _layout(title: str, current: str, content: str,
+            extra_head: str = "", extra_css: str = "") -> str:
+    """Обёртка всех страниц — sidebar + topbar + content + mobile nav."""
+    return f"""<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Fluxio — {title}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>{_css()}{extra_css}</style>
+{extra_head}
+</head>
+<body>
+<div class="app">
+{_sidebar(current)}
+<div class="main-area">
+{_topbar()}
+<main class="content">
+<h1 class="page-title">{title}</h1>
+{content}
+</main>
+</div>
+</div>
+{_mobile_nav(current)}
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<script>
+lucide.createIcons();
+function toggleSidebar() {{
+  document.getElementById('sidebar').classList.toggle('open');
+  document.getElementById('sidebar-overlay').classList.toggle('open');
+}}
+async function workerAction(name, action) {{
+  try {{
+    const res = await fetch(`/api/v1/workers/${{name}}/${{action}}`, {{method:'POST'}});
+    if (res.ok) location.reload();
+    else alert('Ошибка: ' + (await res.json()).error);
+  }} catch(e) {{ alert('Ошибка: ' + e.message); }}
+}}
+</script>
+</body>
+</html>"""
+
+
+# ─── App Factory ─────────────────────────────────────────────────────────────
 
 
 def create_app(container: ServiceContainer | None = None) -> FastAPI:
@@ -90,6 +976,23 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
             "started_at": _started_at.isoformat(),
             "uptime_seconds": uptime,
         })
+
+    # ─── Static files ─────────────────────────────────────────────────────────
+
+    from pathlib import Path
+    from fastapi.responses import FileResponse
+
+    _static_dir = Path(__file__).parent / "static"
+
+    @app.get("/static/{filename}")
+    async def static_file(filename: str) -> FileResponse:
+        """Отдача статических файлов (иконки и т.д.)."""
+        path = _static_dir / filename
+        if not path.exists() or not path.is_file():
+            return JSONResponse({"error": "not found"}, status_code=404)
+        media_types = {".png": "image/png", ".svg": "image/svg+xml", ".ico": "image/x-icon"}
+        media = media_types.get(path.suffix, "application/octet-stream")
+        return FileResponse(path, media_type=media, headers={"Cache-Control": "public, max-age=86400"})
 
     # ─── API v1 ────────────────────────────────────────────────────────────────
 
@@ -115,6 +1018,30 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
 
         return JSONResponse(data)
 
+    # ─── Хелпер: поиск воркера по имени ──────────────────────────────────────
+
+    async def _find_worker(name: str) -> Any:
+        """Найти воркер по имени в контейнере."""
+        if not _container:
+            return None
+        from fluxio.core.workers.buyer import BuyerWorker
+        from fluxio.core.workers.enricher import EnricherWorker
+        from fluxio.core.workers.order_tracker import OrderTrackerWorker
+        from fluxio.core.workers.scanner import ScannerWorker
+        from fluxio.core.workers.updater import UpdaterWorker
+
+        _worker_map: dict[str, type] = {
+            "scanner": ScannerWorker,
+            "updater": UpdaterWorker,
+            "enricher": EnricherWorker,
+            "buyer": BuyerWorker,
+            "order_tracker": OrderTrackerWorker,
+        }
+        wtype = _worker_map.get(name)
+        if wtype and _container.is_initialized(wtype):
+            return await _container.get(wtype)
+        return None
+
     @app.get("/api/v1/workers")
     async def api_workers() -> JSONResponse:
         """Статус воркеров — реальное состояние из объектов воркеров."""
@@ -122,11 +1049,12 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
 
         if _container:
             from fluxio.core.workers.buyer import BuyerWorker
+            from fluxio.core.workers.enricher import EnricherWorker
             from fluxio.core.workers.order_tracker import OrderTrackerWorker
             from fluxio.core.workers.scanner import ScannerWorker
             from fluxio.core.workers.updater import UpdaterWorker
 
-            for worker_type in (ScannerWorker, UpdaterWorker, BuyerWorker, OrderTrackerWorker):
+            for worker_type in (ScannerWorker, UpdaterWorker, EnricherWorker, BuyerWorker, OrderTrackerWorker):
                 if _container.is_initialized(worker_type):
                     worker = await _container.get(worker_type)
                     st = worker.status.to_dict()
@@ -134,26 +1062,39 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
                     if worker_type is ScannerWorker and worker.last_result:
                         st["last_scan"] = {
                             "items_upserted": worker.last_result.items_upserted,
-                            "queue_entries": worker.last_result.queue_entries_added,
-                            "duration_seconds": round(worker.last_result.duration_seconds, 1),
-                            "errors": worker.last_result.errors,
+                            "pages_fetched": worker.last_result.pages_fetched,
+                            "duration_sec": round(worker.last_result.duration_sec, 1),
                         }
-                    # Добавляем метрики Buyer / OrderTracker
-                    if hasattr(worker, "stats"):
-                        st["stats"] = worker.stats()
                     workers.append(st)
-                else:
-                    name = worker_type.__name__.replace("Worker", "").lower()
-                    workers.append({"name": name, "running": False, "last_run_at": None})
-        else:
+
+        if not workers:
             workers = [
                 {"name": "scanner", "running": False, "last_run_at": None},
                 {"name": "updater", "running": False, "last_run_at": None},
+                {"name": "enricher", "running": False, "last_run_at": None},
                 {"name": "buyer", "running": False, "last_run_at": None},
                 {"name": "order_tracker", "running": False, "last_run_at": None},
             ]
 
         return JSONResponse({"workers": workers})
+
+    @app.post("/api/v1/workers/{worker_name}/pause")
+    async def api_worker_pause(worker_name: str) -> JSONResponse:
+        """Поставить воркер на паузу."""
+        worker = await _find_worker(worker_name)
+        if worker is None:
+            return JSONResponse({"error": f"Воркер '{worker_name}' не найден"}, status_code=404)
+        worker.pause()
+        return JSONResponse({"ok": True, "name": worker_name, "paused": True})
+
+    @app.post("/api/v1/workers/{worker_name}/resume")
+    async def api_worker_resume(worker_name: str) -> JSONResponse:
+        """Возобновить работу воркера."""
+        worker = await _find_worker(worker_name)
+        if worker is None:
+            return JSONResponse({"error": f"Воркер '{worker_name}' не найден"}, status_code=404)
+        worker.resume()
+        return JSONResponse({"ok": True, "name": worker_name, "paused": False})
 
     @app.get("/api/v1/candidates")
     async def api_candidates() -> JSONResponse:
@@ -225,32 +1166,46 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )
 
-    # ─── User Dashboard HTML ───────────────────────────────────────────────────
+    # ═══════════════════════════════════════════════════════════════════════════
+    # HTML Pages
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    # ─── Service Status (главная) ──────────────────────────────────────────────
 
     @app.get("/", response_class=HTMLResponse)
-    async def user_index() -> str:
-        """Главная страница — баланс, сводка, ссылки."""
+    @app.get("/admin/", response_class=HTMLResponse)
+    @app.get("/admin", response_class=HTMLResponse)
+    async def page_service_status() -> str:
+        """Объединённая страница Service Status — система, воркеры, прокси, Redis."""
         uptime = int((datetime.now(timezone.utc) - _started_at).total_seconds())
-        h, rem = divmod(uptime, 3600)
+        d, rem = divmod(uptime, 86400)
+        h, rem = divmod(rem, 3600)
         m, s = divmod(rem, 60)
-        mode = "DRY RUN" if config.trading.dry_run else "БОЕВОЙ"
-        mode_color = "#4caf50" if config.trading.dry_run else "#f44336"
+        uptime_str = f"{d}d {h}h {m}m" if d else f"{h}h {m}m {s}s"
+        mode = "Prod" if not config.trading.dry_run else "Dry Run"
 
+        # ── Redis данные ──
+        queue_scanner = 0
+        queue_buyer = 0
+        candidates_count = 0
+        enrich_queue = 0
         try:
-            from fluxio.utils.redis_client import KEY_CANDIDATES, KEY_ENRICH_QUEUE, KEY_UPDATE_QUEUE, get_redis
+            from fluxio.utils.redis_client import (
+                KEY_CANDIDATES,
+                KEY_ENRICH_QUEUE,
+                KEY_UPDATE_QUEUE,
+                get_redis,
+            )
             redis = await get_redis()
-            queue_len = await redis.zcard(KEY_UPDATE_QUEUE)
+            queue_scanner = await redis.zcard(KEY_UPDATE_QUEUE)
             candidates_count = await redis.scard(KEY_CANDIDATES)
-            enrich_queue_len = await redis.scard(KEY_ENRICH_QUEUE)
+            enrich_queue = await redis.scard(KEY_ENRICH_QUEUE)
         except Exception:
-            queue_len = 0
-            candidates_count = 0
-            enrich_queue_len = 0
+            pass
 
-        # Статистика обогащения из БД
-        enriched_count = 0
-        not_enriched_count = 0
+        # ── БД статистика ──
         total_items = 0
+        enriched_count = 0
         try:
             from sqlalchemy import func as sa_func, select
 
@@ -264,721 +1219,212 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
                 enriched_count = (await uow._session.execute(
                     select(sa_func.count()).select_from(Item).where(Item.enriched_at.isnot(None))
                 )).scalar() or 0
-                not_enriched_count = total_items - enriched_count
+        except Exception:
+            pass
+        enriched_pct = round(enriched_count / total_items * 100, 1) if total_items > 0 else 0
+
+        # ── Прокси ──
+        proxy_total = 0
+        proxy_active = 0
+        try:
+            if _container:
+                from fluxio.api.steam_client import SteamClient
+                if _container.is_initialized(SteamClient):
+                    steam = await _container.get(SteamClient)
+                    ps = steam.proxy_stats()
+                    proxy_total = ps["total_proxies"]
+                    proxy_active = ps["total_proxies"] - len(ps.get("bad_proxies", []))
         except Exception:
             pass
 
-        enriched_pct = round(enriched_count / total_items * 100, 1) if total_items > 0 else 0
-
-        return f"""<!DOCTYPE html>
-<html lang="ru">
-<head><meta charset="utf-8"><title>Fluxio</title>
-<style>{_css()}</style></head>
-<body>
-<h1>Fluxio</h1>
-{_nav("/")}
-<div class="grid">
-  <div class="card">
-    <h2>Система</h2>
-    <div class="metric"><span class="label">Режим:</span>
-      <span class="status" style="color:{mode_color}">{mode}</span></div>
-    <div class="metric"><span class="label">Аптайм:</span> {h}ч {m}м {s}с</div>
-    <div class="metric"><span class="label">Дисконт:</span> ≥{config.trading.min_discount_percent}%</div>
-    <div class="metric"><span class="label">Дневной лимит:</span> ${config.trading.daily_limit_usd}</div>
-    <div class="metric"><span class="label">Цена:</span> ${config.trading.min_price_usd} – ${config.trading.max_price_usd}</div>
-  </div>
-  <div class="card">
-    <h2>Redis</h2>
-    <div class="metric"><span class="label">Очередь Steam:</span> {queue_len} предметов</div>
-    <div class="metric"><span class="label">Кандидатов:</span> {candidates_count}</div>
-  </div>
-  <div class="card">
-    <h2>Обогащение</h2>
-    <div class="metric"><span class="label">Обогащено:</span>
-      <strong style="color:#4caf50">{enriched_count}</strong> / {total_items}
-      <span style="color:#8f98a0">({enriched_pct}%)</span></div>
-    <div class="metric"><span class="label">Ожидает:</span>
-      <strong style="color:#ff9800">{not_enriched_count}</strong></div>
-    <div class="metric"><span class="label">В очереди enricher:</span> {enrich_queue_len}</div>
-  </div>
-  <div class="card">
-    <h2>Быстрые ссылки</h2>
-    <div class="metric"><a href="/items">Каталог предметов</a></div>
-    <div class="metric"><a href="/candidates">Кандидаты на покупку</a></div>
-    <div class="metric"><a href="/admin/">Системный дашборд</a></div>
-    <div class="metric"><a href="/admin/logs">Логи (SSE)</a></div>
-    <div class="metric"><a href="/api/v1/workers">API: воркеры</a></div>
-  </div>
-</div>
-</body></html>"""
-
-    @app.get("/items", response_class=HTMLResponse)
-    async def user_items() -> str:
-        """Каталог предметов из БД."""
-        items_html = ""
-        total = 0
-
+        # ── Circuit Breaker ──
+        cb_state = "closed"
+        cb_failures = 0
+        cb_threshold = 5
         try:
-            from fluxio.db.session import async_session_factory
-            from fluxio.db.unit_of_work import UnitOfWork
-            async with UnitOfWork(async_session_factory) as uow:
-                all_items = await uow.items.get_all()
-                total = len(all_items)
-                rows = []
-                for item in all_items[:200]:  # Лимит 200 на страницу
-                    p = float(item.price_usd) if item.price_usd else None
-                    sp = float(item.steam_price_usd) if item.steam_price_usd else None
-                    discount = ""
-                    badge = ""
-                    if p and sp and sp > 0:
-                        fee = config.fees.steam_fee_percent / 100
-                        net = sp * (1 - fee)
-                        d = (net - p) / net * 100 if net > 0 else 0
-                        discount = f"{d:.1f}%"
-                        if d >= config.trading.min_discount_percent:
-                            badge = '<span class="badge badge-ok">✓</span>'
-                    price_str = f"${p:.4f}" if p else "—"
-                    steam_str = f"${sp:.4f}" if sp else "нет"
-                    upd = ""
-                    if hasattr(item, "steam_updated_at") and item.steam_updated_at:
-                        upd = item.steam_updated_at.strftime("%H:%M")
-                    rows.append(
-                        f"<tr><td>{item.market_hash_name}</td>"
-                        f"<td>{price_str}</td>"
-                        f"<td>{steam_str}</td>"
-                        f"<td>{discount} {badge}</td>"
-                        f"<td>{item.steam_volume_24h or '—'}</td>"
-                        f"<td>{upd}</td></tr>"
-                    )
-                items_html = "".join(rows)
-        except Exception as e:
-            items_html = f"<tr><td colspan='6'>Ошибка: {e}</td></tr>"
+            if _container and _container.is_initialized(CircuitBreaker):
+                cb = await _container.get(CircuitBreaker)
+                st = cb.status()
+                cb_state = st["state"]
+                cb_failures = st["failure_count"]
+                cb_threshold = st["threshold"]
+        except Exception:
+            pass
 
-        return f"""<!DOCTYPE html>
-<html lang="ru">
-<head><meta charset="utf-8"><title>Fluxio — Каталог</title>
-<style>{_css()}</style></head>
-<body>
-<h1>Каталог предметов</h1>
-{_nav("/items")}
-<p style="color:#8f98a0">Всего предметов: {total} | Показано: до 200</p>
-<table>
-<thead><tr>
-  <th>market_hash_name</th><th>Цена CS2DT</th><th>Steam медиана</th>
-  <th>Дисконт</th><th>Volume 24h</th><th>Обновлён</th>
-</tr></thead>
-<tbody>{items_html}</tbody>
-</table>
-</body></html>"""
+        system_ok = cb_state == "closed"
 
-    @app.post("/api/v1/candidates/clear")
-    async def api_clear_candidates() -> JSONResponse:
-        """Очистить список кандидатов в Redis."""
-        try:
-            from fluxio.utils.redis_client import KEY_CANDIDATES, get_redis
-            redis = await get_redis()
-            count = await redis.scard(KEY_CANDIDATES)
-            await redis.delete(KEY_CANDIDATES)
-            logger.info(f"Список кандидатов очищен ({count} шт.)")
-            return JSONResponse({"cleared": count})
-        except Exception as e:
-            return JSONResponse({"error": str(e)}, status_code=500)
-
-    @app.get("/candidates", response_class=HTMLResponse)
-    async def user_candidates() -> str:
-        """Текущие кандидаты на арбитраж из Redis."""
-        rows_html = ""
-        total = 0
-        queue_len = 0
-
-        try:
-            from fluxio.utils.redis_client import KEY_CANDIDATES, KEY_UPDATE_QUEUE, get_redis
-            redis = await get_redis()
-            names = list(await redis.smembers(KEY_CANDIDATES))
-            total = len(names)
-            queue_len = await redis.zcard(KEY_UPDATE_QUEUE)
-
-            if names:
-                from fluxio.db.session import async_session_factory
-                from fluxio.db.unit_of_work import UnitOfWork
-                async with UnitOfWork(async_session_factory) as uow:
-                    candidate_rows: list[tuple[float, str]] = []
-                    for name in names:
-                        item = await uow.items.get_by_name(name)
-                        if not item:
-                            continue
-                        p = float(item.price_usd) if item.price_usd else 0.0
-                        sp = float(item.steam_price_usd) if item.steam_price_usd else 0.0
-                        d_val = 0.0
-                        profit_val = 0.0
-                        discount = ""
-                        profit = ""
-                        vol = item.steam_volume_24h or 0
-                        if p > 0 and sp > 0:
-                            fee = config.fees.steam_fee_percent / 100
-                            net = sp * (1 - fee)
-                            d_val = (net - p) / net * 100 if net > 0 else 0
-                            profit_val = net - p
-                            discount = f"{d_val:.1f}%"
-                            profit = f"${profit_val:.4f}"
-                        row = (
-                            f'<tr data-discount="{d_val:.4f}" '
-                            f'data-profit="{profit_val:.6f}" '
-                            f'data-volume="{vol}">'
-                            f"<td>{name}</td>"
-                            f"<td>${p:.4f}</td>"
-                            f"<td>${sp:.4f}</td>"
-                            f"<td><strong style='color:#4caf50'>{discount}</strong></td>"
-                            f"<td>{profit}</td>"
-                            f"<td>{vol or '—'}</td>"
-                            f"</tr>"
-                        )
-                        candidate_rows.append((d_val, row))
-                    candidate_rows.sort(key=lambda x: x[0], reverse=True)
-                    rows_html = "".join(r for _, r in candidate_rows)
-        except Exception as e:
-            rows_html = f"<tr><td colspan='6'>Ошибка: {e}</td></tr>"
-
-        if not rows_html:
-            rows_html = "<tr><td colspan='6' style='text-align:center;color:#8f98a0'>Кандидатов нет. Запусти Scanner + Updater.</td></tr>"
-
-        return f"""<!DOCTYPE html>
-<html lang="ru">
-<head><meta charset="utf-8"><title>Fluxio — Кандидаты</title>
-<style>{_css()}
-.btn {{ display: inline-block; padding: 8px 16px; border-radius: 4px;
-       border: none; cursor: pointer; font-size: 14px; margin-left: 16px; }}
-.btn-danger {{ background: #3d0000; color: #f44336; border: 1px solid #f44336; }}
-.btn-danger:hover {{ background: #f44336; color: #fff; }}
-th.sortable {{ cursor: pointer; user-select: none; }}
-th.sortable:hover {{ color: #fff; }}
-th.sortable::after {{ content: ' ⇅'; opacity: 0.4; }}
-th.sort-desc::after {{ content: ' ↓'; opacity: 1; }}
-th.sort-asc::after {{ content: ' ↑'; opacity: 1; }}
-</style></head>
-<body>
-<h1>Кандидаты на покупку</h1>
-{_nav("/candidates")}
-<p style="color:#8f98a0">
-  Кандидатов: <strong style="color:#4caf50">{total}</strong> |
-  В очереди обновления: {queue_len}
-  <button class="btn btn-danger" onclick="clearCandidates()">Очистить список</button>
-</p>
-<table id="candidates-table">
-<thead><tr>
-  <th>market_hash_name</th><th>Цена CS2DT</th><th>Steam медиана</th>
-  <th class="sortable sort-desc" data-key="discount">Дисконт</th>
-  <th class="sortable" data-key="profit">Прибыль</th>
-  <th class="sortable" data-key="volume">Volume 24h</th>
-</tr></thead>
-<tbody>{rows_html}</tbody>
-</table>
-<script>
-async function clearCandidates() {{
-  if (!confirm('Очистить всех кандидатов? Новые появятся по мере обновления цен.')) return;
-  const resp = await fetch('/api/v1/candidates/clear', {{method: 'POST'}});
-  const data = await resp.json();
-  if (data.cleared !== undefined) {{
-    alert('Очищено: ' + data.cleared + ' кандидатов');
-    location.reload();
-  }} else {{
-    alert('Ошибка: ' + (data.error || 'неизвестная'));
-  }}
-}}
-
-// Сортировка таблицы по data-атрибутам
-document.querySelectorAll('th.sortable').forEach(th => {{
-  th.addEventListener('click', () => {{
-    const key = th.dataset.key;
-    const tbody = document.querySelector('#candidates-table tbody');
-    const rows = Array.from(tbody.querySelectorAll('tr'));
-    const isDesc = th.classList.contains('sort-desc');
-    const newDir = isDesc ? 'asc' : 'desc';
-
-    // Сбросить все заголовки
-    document.querySelectorAll('th.sortable').forEach(h => {{
-      h.classList.remove('sort-asc', 'sort-desc');
-    }});
-    th.classList.add('sort-' + newDir);
-
-    rows.sort((a, b) => {{
-      const va = parseFloat(a.dataset[key]) || 0;
-      const vb = parseFloat(b.dataset[key]) || 0;
-      return newDir === 'desc' ? vb - va : va - vb;
-    }});
-
-    rows.forEach(r => tbody.appendChild(r));
-  }});
-}});
-</script>
-</body></html>"""
-
-    # ─── Purchases ─────────────────────────────────────────────────────────────
-
-    @app.get("/api/v1/purchases")
-    async def api_purchases() -> JSONResponse:
-        """История покупок (JSON)."""
-        try:
-            from fluxio.db.session import async_session_factory
-            from fluxio.db.unit_of_work import UnitOfWork
-            async with UnitOfWork(async_session_factory) as uow:
-                purchases = await uow.purchases.get_all(limit=100)
-                items = []
-                for p in purchases:
-                    items.append({
-                        "id": p.id,
-                        "product_id": p.product_id,
-                        "order_id": p.order_id,
-                        "market_hash_name": p.market_hash_name,
-                        "price_usd": float(p.price_usd) if p.price_usd else None,
-                        "steam_price_usd": float(p.steam_price_usd) if p.steam_price_usd else None,
-                        "discount_percent": float(p.discount_percent) if p.discount_percent else None,
-                        "status": p.status,
-                        "dry_run": p.dry_run,
-                        "purchased_at": p.purchased_at.isoformat() if p.purchased_at else None,
-                        "delivered_at": p.delivered_at.isoformat() if p.delivered_at else None,
-                    })
-            return JSONResponse({"purchases": items, "total": len(items)})
-        except Exception as e:
-            return JSONResponse({"error": str(e), "purchases": [], "total": 0})
-
-    @app.post("/api/v1/purchases/clear")
-    async def api_clear_purchases() -> JSONResponse:
-        """Удалить все покупки из PostgreSQL."""
-        try:
-            from sqlalchemy import delete
-
-            from fluxio.db.models import Purchase
-            from fluxio.db.session import async_session_factory
-            from fluxio.db.unit_of_work import UnitOfWork
-            async with UnitOfWork(async_session_factory) as uow:
-                result = await uow._session.execute(delete(Purchase))
-                count = result.rowcount
-                await uow.commit()
-            logger.info(f"Все покупки удалены из БД ({count} шт.)")
-            return JSONResponse({"cleared": count})
-        except Exception as e:
-            return JSONResponse({"error": str(e)}, status_code=500)
-
-    @app.get("/purchases", response_class=HTMLResponse)
-    async def user_purchases() -> str:
-        """Страница истории покупок."""
-        rows_html = ""
-        total = 0
-        total_spent = 0.0
-        total_profit = 0.0
-        dry_count = 0
-        live_count = 0
-        filtered_count = 0
-
-        total_median_profit = 0.0
-
-        try:
-            from urllib.parse import quote
-
-            from sqlalchemy import func as sa_func, select as sa_select
-
-            from fluxio.db.models import Purchase
-            from fluxio.db.session import async_session_factory
-            from fluxio.db.unit_of_work import UnitOfWork
-            async with UnitOfWork(async_session_factory) as uow:
-                # Статистика по ВСЕМ покупкам
-                all_purchases = await uow.purchases.get_all(limit=100_000)
-                total = len(all_purchases)
-                fee = config.fees.steam_fee_percent / 100
-
-                # Кэш данных из items
-                items_cache: dict[str, object] = {}
-                for p in all_purchases:
-                    if p.market_hash_name not in items_cache:
-                        items_cache[p.market_hash_name] = await uow.items.get_by_name(
-                            p.market_hash_name,
-                        )
-
-                for p in all_purchases:
-                    price = float(p.price_usd) if p.price_usd else 0
-                    steam = float(p.steam_price_usd) if p.steam_price_usd else 0
-                    if p.status == "filtered":
-                        filtered_count += 1
-                        continue
-                    if p.status in ("success", "pending"):
-                        total_spent += price
-                        if steam > 0 and price > 0:
-                            total_profit += steam * (1 - fee) - price
-                        # Прибыль по медиане
-                        item_obj = items_cache.get(p.market_hash_name)
-                        median = float(item_obj.steam_median_30d) if item_obj and item_obj.steam_median_30d else 0
-                        if median > 0 and price > 0:
-                            total_median_profit += median * (1 - fee) - price
-                        if p.dry_run:
-                            dry_count += 1
-                        else:
-                            live_count += 1
-
-                # Таблица — последние 200
-                purchases = all_purchases[:200]
-
-                rows = []
-                for p in purchases:
-                    price = float(p.price_usd) if p.price_usd else 0
-                    steam = float(p.steam_price_usd) if p.steam_price_usd else 0
-                    disc = f"{float(p.discount_percent):.1f}%" if p.discount_percent else "—"
-                    ts = p.purchased_at.strftime("%Y-%m-%d %H:%M") if p.purchased_at else "—"
-
-                    item_obj = items_cache.get(p.market_hash_name)
-                    vol = item_obj.steam_volume_24h if item_obj and item_obj.steam_volume_24h else 0
-                    median = float(item_obj.steam_median_30d) if item_obj and item_obj.steam_median_30d else 0
-
-                    # Ratio: steam_price / median_30d
-                    ratio = steam / median if median > 0 and steam > 0 else 0
-                    ratio_str = f"{ratio:.1f}x" if ratio > 0 else "—"
-                    ratio_color = "#c7d5e0"
-                    if ratio > 2.0:
-                        ratio_color = "#f44336"
-                    elif ratio > 1.5:
-                        ratio_color = "#ff9800"
-
-                    median_str = f"${median:.4f}" if median > 0 else "—"
-
-                    # Ожидаемая прибыль (по steam_price)
-                    profit = 0.0
-                    profit_str = "—"
-                    if steam > 0 and price > 0:
-                        net_steam = steam * (1 - fee)
-                        profit = net_steam - price
-                        color_p = "#4caf50" if profit > 0 else "#f44336"
-                        profit_str = f'<span style="color:{color_p}">${profit:.4f}</span>'
-
-                    # Прибыль по медиане (реалистичная оценка)
-                    median_profit = 0.0
-                    median_profit_str = "—"
-                    if median > 0 and price > 0:
-                        net_median = median * (1 - fee)
-                        median_profit = net_median - price
-                        mp_color = "#4caf50" if median_profit > 0 else "#f44336"
-                        median_profit_str = f'<span style="color:{mp_color}">${median_profit:.4f}</span>'
-
-                    # Статус с цветом
-                    status_colors = {
-                        "success": "#4caf50",
-                        "pending": "#ff9800",
-                        "failed": "#f44336",
-                        "cancelled": "#8f98a0",
-                        "filtered": "#ff6b6b",
-                    }
-                    status_color = status_colors.get(p.status, "#c7d5e0")
-                    dry_badge = ' <span class="badge badge-warn">DRY</span>' if p.dry_run else ""
-                    is_filtered = p.status == "filtered"
-                    row_style = ' style="opacity:0.45"' if is_filtered else ""
-                    filter_note = ""
-                    if is_filtered and p.notes:
-                        filter_note = (
-                            f'<div style="font-size:10px;color:#ff6b6b;'
-                            f'max-width:250px;overflow:hidden;text-overflow:ellipsis;'
-                            f'white-space:nowrap" title="{p.notes}">{p.notes}</div>'
-                        )
-
-                    # Ссылка на Steam Market
-                    steam_url = f"https://steamcommunity.com/market/listings/570/{quote(p.market_hash_name)}"
-
-                    rows.append(
-                        f'<tr data-profit="{profit:.6f}" data-volume="{vol}" '
-                        f'data-median-profit="{median_profit:.6f}" data-ratio="{ratio:.4f}"'
-                        f'{row_style}>'
-                        f'<td><a href="{steam_url}" target="_blank" '
-                        f'style="color:#66c0f4;text-decoration:none">{p.market_hash_name}</a>'
-                        f'{filter_note}</td>'
-                        f"<td>${price:.4f}</td>"
-                        f"<td>${steam:.4f}</td>"
-                        f"<td>{median_str}</td>"
-                        f'<td style="color:{ratio_color}">{ratio_str}</td>'
-                        f"<td>{disc}</td>"
-                        f"<td>{profit_str}</td>"
-                        f"<td>{median_profit_str}</td>"
-                        f"<td>{vol or '—'}</td>"
-                        f"<td><span style='color:{status_color}'>{p.status}</span>{dry_badge}</td>"
-                        f"<td>{ts}</td>"
-                        f"</tr>"
-                    )
-                rows_html = "".join(rows)
-        except Exception as e:
-            logger.exception("Dashboard: ошибка на странице покупок")
-            rows_html = f"<tr><td colspan='11'>Ошибка: {e}</td></tr>"
-
-        if not rows_html:
-            rows_html = "<tr><td colspan='11' style='text-align:center;color:#8f98a0'>Покупок пока нет.</td></tr>"
-
-        profit_color = "#4caf50" if total_profit >= 0 else "#f44336"
-        median_profit_color = "#4caf50" if total_median_profit >= 0 else "#f44336"
-        mode_label = "DRY RUN" if config.trading.dry_run else "LIVE"
-
-        return f"""<!DOCTYPE html>
-<html lang="ru">
-<head><meta charset="utf-8"><title>Fluxio — Покупки</title>
-<style>{_css()}
-.stats-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 16px; }}
-.stat-card {{ background: #1b2838; border-radius: 8px; padding: 14px 18px; border: 1px solid #2a475e; }}
-.stat-card .val {{ font-size: 22px; font-weight: 700; margin-top: 4px; }}
-.stat-card .lbl {{ color: #8f98a0; font-size: 13px; }}
-.btn {{ display: inline-block; padding: 8px 16px; border-radius: 4px;
-       border: none; cursor: pointer; font-size: 14px; margin-left: 16px; }}
-.btn-danger {{ background: #3d0000; color: #f44336; border: 1px solid #f44336; }}
-.btn-danger:hover {{ background: #f44336; color: #fff; }}
-th.sortable {{ cursor: pointer; user-select: none; }}
-th.sortable:hover {{ color: #fff; }}
-th.sortable::after {{ content: ' ⇅'; opacity: 0.4; }}
-th.sort-desc::after {{ content: ' ↓'; opacity: 1; }}
-th.sort-asc::after {{ content: ' ↑'; opacity: 1; }}
-</style></head>
-<body>
-<h1>Покупки ({mode_label})</h1>
-{_nav("/purchases")}
-<div class="stats-grid">
-  <div class="stat-card">
-    <div class="lbl">Куплено предметов</div>
-    <div class="val" style="color:#66c0f4">{dry_count + live_count}</div>
-    <div class="lbl">dry: {dry_count} | live: {live_count}</div>
-  </div>
-  <div class="stat-card">
-    <div class="lbl">Отсеяно фильтрами</div>
-    <div class="val" style="color:#f44336">{filtered_count}</div>
-  </div>
-  <div class="stat-card">
-    <div class="lbl">Потрачено</div>
-    <div class="val" style="color:#ff9800">${total_spent:.2f}</div>
-  </div>
-  <div class="stat-card">
-    <div class="lbl">Прибыль (по листингу)</div>
-    <div class="val" style="color:{profit_color}">${total_profit:.2f}</div>
-  </div>
-  <div class="stat-card">
-    <div class="lbl">Прибыль (по медиане 30д)</div>
-    <div class="val" style="color:{median_profit_color}">${total_median_profit:.2f}</div>
-  </div>
-</div>
-<p>
-  Показано: {min(total, 200)} из {total}
-  <button class="btn btn-danger" onclick="clearPurchases()">Очистить все покупки</button>
-</p>
-<table id="purchases-table">
-<thead><tr>
-  <th>Предмет</th><th>Цена</th><th>Steam</th>
-  <th>Медиана 30д</th>
-  <th class="sortable" data-key="ratio">Ratio</th>
-  <th>Дисконт</th>
-  <th class="sortable" data-key="profit">Прибыль</th>
-  <th class="sortable" data-key="median-profit">По медиане</th>
-  <th class="sortable" data-key="volume">Vol 24h</th>
-  <th>Статус</th><th>Дата</th>
-</tr></thead>
-<tbody>{rows_html}</tbody>
-</table>
-<script>
-async function clearPurchases() {{
-  if (!confirm('Удалить ВСЕ покупки из базы данных? Это действие необратимо.')) return;
-  const resp = await fetch('/api/v1/purchases/clear', {{method: 'POST'}});
-  const data = await resp.json();
-  if (data.cleared !== undefined) {{
-    alert('Удалено: ' + data.cleared + ' покупок');
-    location.reload();
-  }} else {{
-    alert('Ошибка: ' + (data.error || 'неизвестная'));
-  }}
-}}
-
-document.querySelectorAll('th.sortable').forEach(th => {{
-  th.addEventListener('click', () => {{
-    const key = th.dataset.key;
-    const tbody = document.querySelector('#purchases-table tbody');
-    const rows = Array.from(tbody.querySelectorAll('tr'));
-    const isDesc = th.classList.contains('sort-desc');
-    const newDir = isDesc ? 'asc' : 'desc';
-    document.querySelectorAll('th.sortable').forEach(h => {{
-      h.classList.remove('sort-asc', 'sort-desc');
-    }});
-    th.classList.add('sort-' + newDir);
-    const camelKey = key.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
-    rows.sort((a, b) => {{
-      const va = parseFloat(a.dataset[camelKey]) || 0;
-      const vb = parseFloat(b.dataset[camelKey]) || 0;
-      return newDir === 'desc' ? vb - va : va - vb;
-    }});
-    rows.forEach(r => tbody.appendChild(r));
-  }});
-}});
-</script>
-</body></html>"""
-
-    # ─── Admin HTML ────────────────────────────────────────────────────────────
-
-    @app.get("/admin/", response_class=HTMLResponse)
-    @app.get("/admin", response_class=HTMLResponse)
-    async def admin_index() -> str:
-        """Системный дашборд — статус, воркеры, circuit breaker."""
-        uptime = int((datetime.now(timezone.utc) - _started_at).total_seconds())
-        hours, rem = divmod(uptime, 3600)
-        minutes, seconds = divmod(rem, 60)
-
-        mode = "DRY RUN" if config.trading.dry_run else "БОЕВОЙ"
-        mode_color = "#4caf50" if config.trading.dry_run else "#f44336"
-
-        # Circuit Breaker статус
-        cb_html = ""
-        if _container and _container.is_initialized(CircuitBreaker):
-            cb = await _container.get(CircuitBreaker)
-            st = cb.status()
-            state_color = {"closed": "#4caf50", "open": "#f44336", "half_open": "#ff9800"}
-            cb_html = f"""<div class="card">
-              <h2>Circuit Breaker: {st['name']}</h2>
-              <div class="metric"><span class="label">Состояние:</span>
-                <span style="color:{state_color.get(st['state'], '#fff')}">{st['state'].upper()}</span></div>
-              <div class="metric"><span class="label">Ошибок подряд:</span> {st['failure_count']} / {st['threshold']}</div>
-              <div class="metric"><span class="label">Всего запросов:</span> {st['total_calls']}</div>
-            </div>"""
-
-        # Статус воркеров
+        # ── Воркеры ──
         workers_html = ""
         if _container:
             from fluxio.core.workers.buyer import BuyerWorker as _BuyerW
+            from fluxio.core.workers.enricher import EnricherWorker as _EnricherW
             from fluxio.core.workers.order_tracker import OrderTrackerWorker as _TrackerW
             from fluxio.core.workers.scanner import ScannerWorker
             from fluxio.core.workers.updater import UpdaterWorker
 
-            for worker_type in (ScannerWorker, UpdaterWorker, _BuyerW, _TrackerW):
+            for worker_type in (ScannerWorker, UpdaterWorker, _EnricherW, _BuyerW, _TrackerW):
                 if _container.is_initialized(worker_type):
                     w = await _container.get(worker_type)
                     st = w.status
-                    color = "#4caf50" if st.running else "#f44336"
+                    dot_class = "paused" if st.paused else ("running" if st.running else "stopped")
                     last = st.last_run_at.strftime("%H:%M:%S") if st.last_run_at else "—"
-                    err = f'<div class="metric" style="color:#f44336">Ошибка: {st.last_error}</div>' if st.last_error else ""
-                    workers_html += f"""<div class="card">
-                      <h2>Воркер: {st.name}</h2>
-                      <div class="metric"><span class="label">Статус:</span>
-                        <span style="color:{color}">{"работает" if st.running else "остановлен"}</span></div>
-                      <div class="metric"><span class="label">Циклов:</span> {st.cycles}</div>
-                      <div class="metric"><span class="label">Обработано:</span> {st.items_processed}</div>
-                      <div class="metric"><span class="label">Последний запуск:</span> {last}</div>
-                      {err}
+                    err_html = ""
+                    if st.last_error:
+                        err_html = f'<div style="color:var(--danger);font-size:11px;margin-top:4px">{st.last_error}</div>'
+                    if st.paused:
+                        btn = f'<button class="worker-btn" onclick="workerAction(\'{st.name}\',\'resume\')">&#9654; Resume</button>'
+                    else:
+                        btn = f'<button class="worker-btn" onclick="workerAction(\'{st.name}\',\'pause\')">&#9646;&#9646; Pause</button>'
+                    workers_html += f"""<div class="worker-card">
+                      <div class="worker-dot {dot_class}"></div>
+                      <div class="worker-info">
+                        <div class="worker-name">{st.name}</div>
+                        <div class="worker-meta">Cycles: {st.cycles} &middot; Processed: {st.items_processed} &middot; Last: {last}</div>
+                        {err_html}
+                      </div>
+                      {btn}
                     </div>"""
 
         if not workers_html:
-            workers_html = '<div class="card"><h2>Воркеры</h2><div class="metric" style="color:#8f98a0">Не инициализированы</div></div>'
+            workers_html = '<div class="empty"><p>Workers not initialized</p></div>'
 
-        # Прокси статистика
-        proxy_html = ""
-        if _container:
-            from fluxio.api.steam_client import SteamClient as _SteamC
-            if _container.is_initialized(_SteamC):
-                steam = await _container.get(_SteamC)
-                ps = steam.proxy_stats()
-                bad_rows = ""
-                if ps["bad_proxies"]:
-                    bad_rows = "".join(
-                        f'<div class="metric" style="color:#f44336">'
-                        f'ch{bp["channel"]}: {bp["label"]} — {bp["count_429"]}x 429</div>'
-                        for bp in ps["bad_proxies"]
-                    )
-                else:
-                    bad_rows = '<div class="metric" style="color:#4caf50">Нет плохих прокси</div>'
-                total_429 = sum(ps["counts_429"].values())
-                proxy_html = f"""<div class="card">
-                  <h2>Прокси (Steam)</h2>
-                  <div class="metric"><span class="label">Всего прокси:</span> {ps['total_proxies']}</div>
-                  <div class="metric"><span class="label">Каналов:</span> {ps['total_channels']} (прокси + direct)</div>
-                  <div class="metric"><span class="label">Всего 429:</span> {total_429}</div>
-                  <div class="metric"><span class="label">Плохих прокси (≥3x 429):</span>
-                    <span style="color:{'#f44336' if ps['bad_proxies'] else '#4caf50'}">{len(ps['bad_proxies'])}</span></div>
-                  {bad_rows}
-                </div>"""
-
-        # Redis метрики
-        redis_html = ""
-        try:
-            from fluxio.utils.redis_client import KEY_CANDIDATES, KEY_UPDATE_QUEUE, get_redis
-            redis = await get_redis()
-            queue_len = await redis.zcard(KEY_UPDATE_QUEUE)
-            cand_count = await redis.scard(KEY_CANDIDATES)
-            redis_html = f"""<div class="card">
-              <h2>Redis</h2>
-              <div class="metric"><span class="label">steam:update_queue:</span> {queue_len}</div>
-              <div class="metric"><span class="label">arb:candidates:</span> {cand_count}</div>
-            </div>"""
-        except Exception as e:
-            redis_html = f'<div class="card"><h2>Redis</h2><div class="metric" style="color:#f44336">Ошибка: {e}</div></div>'
-
-        return f"""<!DOCTYPE html>
-<html lang="ru">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Fluxio — Admin</title><style>{_css()}</style></head>
-<body>
-<h1>Fluxio — Admin</h1>
-<nav>
-  <a href="/admin/">Статус</a>
-  <a href="/admin/logs">Логи (SSE)</a>
-  <a href="/">User Dashboard</a>
-  <a href="/api/v1/status">API Status</a>
-  <a href="/health">Health</a>
-</nav>
-<div class="grid">
-  <div class="card">
-    <h2>Система</h2>
-    <div class="metric"><span class="label">Режим:</span>
-      <span class="status" style="color:{mode_color}">{mode}</span></div>
-    <div class="metric"><span class="label">Аптайм:</span> {hours}ч {minutes}м {seconds}с</div>
-    <div class="metric"><span class="label">Дисконт:</span> ≥{config.trading.min_discount_percent}%</div>
-    <div class="metric"><span class="label">Дневной лимит:</span> ${config.trading.daily_limit_usd}</div>
-    <div class="metric"><span class="label">Цена:</span> ${config.trading.min_price_usd} – ${config.trading.max_price_usd}</div>
+        # ── Сборка страницы ──
+        content = f"""
+<!-- Stat Cards Row -->
+<div class="grid grid-4" style="margin-bottom:20px">
+  <div class="stat-card">
+    <div class="stat-label">Proxies</div>
+    <div class="stat-value" style="color:var(--accent)">{proxy_active}<span style="font-size:14px;color:var(--text-muted)">/{proxy_total}</span></div>
+    <div class="stat-sub">Active / Total</div>
   </div>
-  {cb_html}
-  {proxy_html}
-  {redis_html}
+  <div class="stat-card">
+    <div class="stat-label">Redis Queues</div>
+    <div class="stat-value" style="color:var(--warning)">{queue_scanner + candidates_count}</div>
+    <div class="stat-sub">Scanner: {queue_scanner} &middot; Candidates: {candidates_count}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Items Enriched</div>
+    <div class="stat-value" style="color:var(--success)">{enriched_pct}%</div>
+    <div class="stat-sub">{enriched_count} / {total_items} &middot; Queue: {enrich_queue}</div>
+    <div class="progress-bar"><div class="progress-fill" style="width:{enriched_pct}%"></div></div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">System</div>
+    <div style="display:flex;align-items:center;gap:8px;margin:4px 0">
+      <span class="badge {'badge-success' if system_ok else 'badge-danger'}">{'OK' if system_ok else cb_state.upper()}</span>
+    </div>
+    <div class="stat-sub">Mode: {mode} &middot; Uptime: {uptime_str}</div>
+    <div class="stat-sub">Discount: &ge;{config.trading.min_discount_percent}% &middot; Limit: ${config.trading.daily_limit_usd}</div>
+  </div>
+</div>
+
+<!-- Circuit Breaker -->
+<div class="card" style="margin-bottom:20px">
+  <div class="card-header"><div class="card-title">Circuit Breaker</div></div>
+  <div style="display:flex;gap:24px;flex-wrap:wrap">
+    <div class="metric-row" style="border:none;padding:0">
+      <span class="metric-label" style="margin-right:8px">State:</span>
+      <span class="badge {'badge-success' if cb_state == 'closed' else 'badge-danger' if cb_state == 'open' else 'badge-warning'}">{cb_state.upper()}</span>
+    </div>
+    <div><span style="color:var(--text-muted)">Failures:</span> <strong>{cb_failures} / {cb_threshold}</strong></div>
+  </div>
+</div>
+
+<!-- Workers -->
+<div class="card-header" style="margin-bottom:12px"><div class="card-title" style="font-size:16px">Workers</div></div>
+<div class="grid grid-2" style="margin-bottom:20px">
   {workers_html}
 </div>
-</body></html>"""
+
+<!-- Live Charts -->
+<div class="grid grid-2" style="margin-bottom:20px">
+  <div class="chart-card">
+    <div class="card-header"><div class="card-title">Proxy Usage</div></div>
+    <canvas id="chartProxy" height="200"></canvas>
+  </div>
+  <div class="chart-card">
+    <div class="card-header"><div class="card-title">Queue Activity</div></div>
+    <canvas id="chartQueue" height="200"></canvas>
+  </div>
+</div>
+"""
+
+        extra_chart_js = f"""<script>
+document.addEventListener('DOMContentLoaded', function() {{
+  // Proxy donut chart
+  const ctxProxy = document.getElementById('chartProxy');
+  if (ctxProxy) {{
+    new Chart(ctxProxy, {{
+      type: 'doughnut',
+      data: {{
+        labels: ['Active', 'Bad'],
+        datasets: [{{
+          data: [{proxy_active}, {proxy_total - proxy_active}],
+          backgroundColor: ['#3b82f6', '#1e293b'],
+          borderWidth: 0,
+          borderRadius: 4,
+        }}]
+      }},
+      options: {{
+        responsive: true,
+        cutout: '70%',
+        plugins: {{
+          legend: {{ position: 'bottom', labels: {{ color: '#94a3b8', font: {{ size: 12 }} }} }}
+        }}
+      }}
+    }});
+  }}
+
+  // Queue bar chart
+  const ctxQueue = document.getElementById('chartQueue');
+  if (ctxQueue) {{
+    new Chart(ctxQueue, {{
+      type: 'bar',
+      data: {{
+        labels: ['Scanner Queue', 'Candidates', 'Enrich Queue'],
+        datasets: [{{
+          data: [{queue_scanner}, {candidates_count}, {enrich_queue}],
+          backgroundColor: ['#3b82f6', '#22c55e', '#f59e0b'],
+          borderRadius: 6,
+          borderSkipped: false,
+        }}]
+      }},
+      options: {{
+        responsive: true,
+        scales: {{
+          y: {{ beginAtZero: true, grid: {{ color: '#1a1f2e' }}, ticks: {{ color: '#64748b' }} }},
+          x: {{ grid: {{ display: false }}, ticks: {{ color: '#94a3b8' }} }}
+        }},
+        plugins: {{
+          legend: {{ display: false }}
+        }}
+      }}
+    }});
+  }}
+}});
+</script>"""
+
+        return _layout("Service Status", "/", content,
+                       extra_head='<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>') + extra_chart_js
+
+    # ─── Logs ──────────────────────────────────────────────────────────────────
 
     @app.get("/admin/logs", response_class=HTMLResponse)
-    async def admin_logs() -> str:
+    async def page_logs() -> str:
         """Страница SSE логов с фильтрацией по воркерам."""
-        return """<!DOCTYPE html>
-<html lang="ru">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Fluxio — Логи</title>
-<style>
-  body { font-family: 'Consolas', 'Courier New', monospace; background: #0f1923; color: #c7d5e0;
-         margin: 0; padding: 20px; }
-  h1 { color: #66c0f4; font-family: 'Segoe UI', sans-serif; }
-  nav { margin-bottom: 20px; font-family: 'Segoe UI', sans-serif; }
-  nav a { color: #66c0f4; margin-right: 16px; text-decoration: none; }
-  .tabs { display: flex; gap: 0; margin-bottom: 12px; font-family: 'Segoe UI', sans-serif; }
-  .tab { padding: 8px 18px; background: #1b2838; border: 1px solid #2a475e; color: #8f98a0;
-         cursor: pointer; font-size: 14px; transition: all 0.15s; user-select: none; }
-  .tab:first-child { border-radius: 6px 0 0 6px; }
-  .tab:last-child { border-radius: 0 6px 6px 0; }
-  .tab:not(:last-child) { border-right: none; }
-  .tab.active { background: #2a475e; color: #66c0f4; font-weight: 600; }
-  .tab:hover:not(.active) { background: #243547; color: #c7d5e0; }
-  .tab .count { font-size: 11px; margin-left: 6px; color: #8f98a0; }
-  .tab.active .count { color: #66c0f4; }
-  #logs { background: #1b2838; border: 1px solid #2a475e; border-radius: 8px;
-          padding: 16px; height: 72vh; overflow-y: auto; font-size: 13px; line-height: 1.5; }
-  .log-line { white-space: pre-wrap; word-break: break-all; }
-  .ERROR { color: #f44336; } .WARNING { color: #ff9800; }
-  .INFO { color: #4caf50; } .DEBUG { color: #8f98a0; }
-  #status { color: #8f98a0; margin-bottom: 10px; font-family: 'Segoe UI', sans-serif; font-size: 13px; }
-</style></head>
-<body>
-<h1>Fluxio — Логи</h1>
-<nav><a href="/admin/">← Admin</a><a href="/">User</a></nav>
+        content = """
 <div class="tabs">
-  <div class="tab active" data-filter="all">Все<span class="count" id="cnt-all">0</span></div>
+  <div class="tab active" data-filter="all">All Logs<span class="count" id="cnt-all">0</span></div>
   <div class="tab" data-filter="scanner">Scanner<span class="count" id="cnt-scanner">0</span></div>
   <div class="tab" data-filter="updater">Updater<span class="count" id="cnt-updater">0</span></div>
   <div class="tab" data-filter="buyer">Buyer<span class="count" id="cnt-buyer">0</span></div>
-  <div class="tab" data-filter="other">Другое<span class="count" id="cnt-other">0</span></div>
+  <div class="tab" data-filter="other">Other<span class="count" id="cnt-other">0</span></div>
 </div>
-<div id="status">Подключение...</div>
-<div id="logs"></div>
-<script>
+<div class="log-status" id="status">Connecting...</div>
+<div class="log-container" id="logs"></div>
+"""
+
+        extra_js = """<script>
 const logsDiv = document.getElementById('logs');
 const statusDiv = document.getElementById('status');
 let activeFilter = 'all';
@@ -987,17 +1433,17 @@ const MAX_LINES = 2000;
 const counters = {all: 0, scanner: 0, updater: 0, buyer: 0, other: 0};
 
 function getLogClass(text) {
-  if (text.includes('| ERROR |')) return 'ERROR';
-  if (text.includes('| WARNING |')) return 'WARNING';
-  if (text.includes('| INFO |')) return 'INFO';
-  if (text.includes('| DEBUG |')) return 'DEBUG';
+  if (text.includes('| ERROR |')) return 'log-ERROR';
+  if (text.includes('| WARNING |')) return 'log-WARNING';
+  if (text.includes('| INFO |')) return 'log-INFO';
+  if (text.includes('| DEBUG |')) return 'log-DEBUG';
   return '';
 }
 
 function getWorker(text) {
-  if (/\| (scanner|cs2dt_client):/.test(text) || text.includes('Scanner:')) return 'scanner';
-  if (/\| (updater|steam_client):/.test(text) || text.includes('Updater:')) return 'updater';
-  if (/\| (buyer|safety):/.test(text) || text.includes('Buyer')) return 'buyer';
+  if (/\\| (scanner|cs2dt_client):/.test(text) || text.includes('Scanner:')) return 'scanner';
+  if (/\\| (updater|steam_client):/.test(text) || text.includes('Updater:')) return 'updater';
+  if (/\\| (buyer|safety):/.test(text) || text.includes('Buyer')) return 'buyer';
   return 'other';
 }
 
@@ -1063,16 +1509,567 @@ document.querySelectorAll('.tab').forEach(tab => {
 
 function connect() {
   const es = new EventSource('/sse/logs');
-  es.onopen = () => { statusDiv.textContent = 'Подключено (SSE)'; };
+  es.onopen = () => { statusDiv.textContent = 'Connected (SSE)'; };
   es.onmessage = (e) => { addLine(e.data); };
   es.onerror = () => {
-    statusDiv.textContent = 'Отключено. Переподключение...';
+    statusDiv.textContent = 'Disconnected. Reconnecting...';
     es.close();
     setTimeout(connect, 3000);
   };
 }
 connect();
-</script></body></html>"""
+</script>"""
+
+        return _layout("Logs", "/admin/logs", content) + extra_js
+
+    # ─── Catalog (/items) ──────────────────────────────────────────────────────
+
+    @app.get("/items", response_class=HTMLResponse)
+    async def page_catalog() -> str:
+        """Каталог предметов из БД — карточки с фильтрацией."""
+        items_data: list[dict[str, Any]] = []
+        total = 0
+
+        try:
+            from fluxio.db.session import async_session_factory
+            from fluxio.db.unit_of_work import UnitOfWork
+            async with UnitOfWork(async_session_factory) as uow:
+                all_items = await uow.items.get_all()
+                total = len(all_items)
+                fee = config.fees.steam_fee_percent / 100
+                for item in all_items[:200]:
+                    p = float(item.price_usd) if item.price_usd else None
+                    sp = float(item.steam_price_usd) if item.steam_price_usd else None
+                    d_val = 0.0
+                    if p and sp and sp > 0:
+                        net = sp * (1 - fee)
+                        d_val = (net - p) / net * 100 if net > 0 else 0
+                    items_data.append({
+                        "name": item.market_hash_name,
+                        "price": p,
+                        "steam": sp,
+                        "discount": d_val,
+                        "volume": item.steam_volume_24h or 0,
+                        "updated": item.steam_updated_at.strftime("%H:%M") if hasattr(item, "steam_updated_at") and item.steam_updated_at else "",
+                    })
+        except Exception as e:
+            logger.exception("Dashboard: ошибка на странице каталога")
+
+        # Генерируем карточки (первые 40 видимы, остальные скрыты)
+        PAGE_SIZE = 40
+        cards_html = ""
+        for idx, it in enumerate(items_data):
+            price_str = f"${it['price']:.2f}" if it["price"] else "—"
+            steam_str = f"${it['steam']:.2f}" if it["steam"] else "—"
+            discount_badge = ""
+            if it["discount"] >= config.trading.min_discount_percent:
+                discount_badge = f'<span class="badge badge-success">{it["discount"]:.1f}%</span>'
+            elif it["discount"] > 0:
+                discount_badge = f'<span class="badge badge-info">{it["discount"]:.1f}%</span>'
+
+            hidden = ' style="display:none"' if idx >= PAGE_SIZE else ""
+            cards_html += f"""<div class="item-card" data-discount="{it['discount']:.2f}" data-volume="{it['volume']}" data-price="{it['price'] or 0}"{hidden}>
+  <div class="item-img">
+    <i data-lucide="package" style="width:40px;height:40px;color:var(--text-muted)"></i>
+  </div>
+  <div class="item-name" title="{it['name']}">{it['name']}</div>
+  <div class="item-rarity">Vol: {it['volume']} {discount_badge}</div>
+  <div class="item-footer">
+    <div class="item-price">{price_str}</div>
+    <div style="font-size:11px;color:var(--text-muted)">Steam: {steam_str}</div>
+  </div>
+</div>"""
+
+        if not cards_html:
+            cards_html = '<div class="empty" style="grid-column:1/-1"><p>No items found</p></div>'
+
+        content = f"""
+<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:8px">
+  <div style="color:var(--text-muted);font-size:13px">
+    Total: <strong style="color:var(--text)">{total}</strong> &middot; Showing: {min(total, 200)}
+  </div>
+  <div style="display:flex;gap:8px">
+    <button class="btn btn-ghost" onclick="toggleFilter()" id="filterBtn">
+      <i data-lucide="sliders-horizontal" style="width:14px;height:14px"></i> Filter
+    </button>
+  </div>
+</div>
+
+<div class="catalog-layout" style="display:grid;grid-template-columns:220px 1fr;gap:16px">
+  <!-- Filter Panel -->
+  <div class="filter-panel" id="filterPanel">
+    <h3>Filters</h3>
+    <div class="filter-group">
+      <div class="filter-label"><span>Min Discount</span><span id="discountVal">0%</span></div>
+      <input type="range" min="0" max="50" value="0" id="filterDiscount" oninput="applyFilters()">
+    </div>
+    <div class="filter-group">
+      <div class="filter-label"><span>Min Volume</span><span id="volumeVal">0</span></div>
+      <input type="range" min="0" max="1000" value="0" step="10" id="filterVolume" oninput="applyFilters()">
+    </div>
+    <div class="filter-group">
+      <div class="filter-label"><span>Max Price</span><span id="priceVal">$1000</span></div>
+      <input type="range" min="1" max="1000" value="1000" id="filterPrice" oninput="applyFilters()">
+    </div>
+  </div>
+
+  <!-- Items Grid -->
+  <div class="items-grid" id="itemsGrid" style="display:grid;grid-template-columns:repeat(auto-fill, minmax(220px, 1fr));gap:14px;align-content:start">
+    {cards_html}
+  </div>
+</div>
+<div style="text-align:center;margin-top:20px" id="loadMoreWrap">
+  <button class="btn btn-ghost" id="loadMoreBtn" onclick="showMore()" {'style="display:none"' if len(items_data) <= PAGE_SIZE else ''}>
+    Show More ({len(items_data) - PAGE_SIZE} remaining)
+  </button>
+</div>"""
+
+        extra_js = """<script>
+let visibleCount = 40;
+function showMore() {
+  const cards = document.querySelectorAll('.item-card');
+  const newLimit = visibleCount + 40;
+  cards.forEach((card, i) => {
+    if (i < newLimit) card.style.display = '';
+  });
+  visibleCount = newLimit;
+  if (visibleCount >= cards.length) {
+    document.getElementById('loadMoreBtn').style.display = 'none';
+  } else {
+    document.getElementById('loadMoreBtn').textContent = 'Show More (' + (cards.length - visibleCount) + ' remaining)';
+  }
+}
+
+function toggleFilter() {
+  document.getElementById('filterPanel').classList.toggle('open');
+}
+
+function applyFilters() {
+  const minD = parseFloat(document.getElementById('filterDiscount').value);
+  const minV = parseFloat(document.getElementById('filterVolume').value);
+  const maxP = parseFloat(document.getElementById('filterPrice').value);
+
+  document.getElementById('discountVal').textContent = minD + '%';
+  document.getElementById('volumeVal').textContent = minV;
+  document.getElementById('priceVal').textContent = '$' + maxP;
+
+  document.querySelectorAll('.item-card').forEach(card => {
+    const d = parseFloat(card.dataset.discount) || 0;
+    const v = parseFloat(card.dataset.volume) || 0;
+    const p = parseFloat(card.dataset.price) || 0;
+    const show = d >= minD && v >= minV && p <= maxP;
+    card.style.display = show ? '' : 'none';
+  });
+}
+</script>"""
+
+        return _layout("Catalog", "/items", content) + extra_js
+
+    # ─── Candidates ────────────────────────────────────────────────────────────
+
+    @app.post("/api/v1/candidates/clear")
+    async def api_clear_candidates() -> JSONResponse:
+        """Очистить список кандидатов в Redis."""
+        try:
+            from fluxio.utils.redis_client import KEY_CANDIDATES, get_redis
+            redis = await get_redis()
+            count = await redis.scard(KEY_CANDIDATES)
+            await redis.delete(KEY_CANDIDATES)
+            logger.info(f"Список кандидатов очищен ({count} шт.)")
+            return JSONResponse({"cleared": count})
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    @app.get("/candidates", response_class=HTMLResponse)
+    async def page_candidates() -> str:
+        """Текущие кандидаты на арбитраж из Redis."""
+        rows_html = ""
+        total = 0
+        queue_len = 0
+
+        try:
+            from fluxio.utils.redis_client import KEY_CANDIDATES, KEY_UPDATE_QUEUE, get_redis
+            redis = await get_redis()
+            names = list(await redis.smembers(KEY_CANDIDATES))
+            total = len(names)
+            queue_len = await redis.zcard(KEY_UPDATE_QUEUE)
+
+            if names:
+                from fluxio.db.session import async_session_factory
+                from fluxio.db.unit_of_work import UnitOfWork
+                async with UnitOfWork(async_session_factory) as uow:
+                    candidate_rows: list[tuple[float, str]] = []
+                    for name in names:
+                        item = await uow.items.get_by_name(name)
+                        if not item:
+                            continue
+                        p = float(item.price_usd) if item.price_usd else 0.0
+                        sp = float(item.steam_price_usd) if item.steam_price_usd else 0.0
+                        d_val = 0.0
+                        profit_val = 0.0
+                        discount = ""
+                        profit = ""
+                        vol = item.steam_volume_24h or 0
+                        if p > 0 and sp > 0:
+                            fee = config.fees.steam_fee_percent / 100
+                            net = sp * (1 - fee)
+                            d_val = (net - p) / net * 100 if net > 0 else 0
+                            profit_val = net - p
+                            discount = f"{d_val:.1f}%"
+                            profit = f"${profit_val:.4f}"
+                        profit_color = "var(--success)" if profit_val > 0 else "var(--danger)"
+                        row = (
+                            f'<tr data-discount="{d_val:.4f}" '
+                            f'data-profit="{profit_val:.6f}" '
+                            f'data-volume="{vol}">'
+                            f"<td>{name}</td>"
+                            f"<td>${p:.4f}</td>"
+                            f"<td>${sp:.4f}</td>"
+                            f'<td><span style="color:var(--success);font-weight:600">{discount}</span></td>'
+                            f'<td><span style="color:{profit_color}">{profit}</span></td>'
+                            f"<td>{vol or '—'}</td>"
+                            f"</tr>"
+                        )
+                        candidate_rows.append((d_val, row))
+                    candidate_rows.sort(key=lambda x: x[0], reverse=True)
+                    rows_html = "".join(r for _, r in candidate_rows)
+        except Exception as e:
+            rows_html = f"<tr><td colspan='6'>Error: {e}</td></tr>"
+
+        if not rows_html:
+            rows_html = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:32px">No candidates yet. Run Scanner + Updater.</td></tr>'
+
+        content = f"""
+<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:8px">
+  <div style="display:flex;gap:16px;align-items:center">
+    <span style="color:var(--text-muted)">Candidates: <strong style="color:var(--success)">{total}</strong></span>
+    <span style="color:var(--text-muted)">Update Queue: <strong>{queue_len}</strong></span>
+  </div>
+  <button class="btn btn-danger" onclick="clearCandidates()">
+    <i data-lucide="trash-2" style="width:14px;height:14px"></i> Clear
+  </button>
+</div>
+
+<div class="table-wrap" style="max-height:70vh;overflow:auto"><div class="table-scroll">
+<table id="candidates-table">
+<thead style="position:sticky;top:0;z-index:1"><tr>
+  <th>Item</th><th>CS2DT Price</th><th>Steam Median</th>
+  <th class="sortable sort-desc" data-key="discount">Discount</th>
+  <th class="sortable" data-key="profit">Profit</th>
+  <th class="sortable" data-key="volume">Vol 24h</th>
+</tr></thead>
+<tbody>{rows_html}</tbody>
+</table>
+</div></div>"""
+
+        extra_js = """<script>
+async function clearCandidates() {
+  if (!confirm('Clear all candidates? New ones will appear as prices update.')) return;
+  const resp = await fetch('/api/v1/candidates/clear', {method: 'POST'});
+  const data = await resp.json();
+  if (data.cleared !== undefined) {
+    alert('Cleared: ' + data.cleared + ' candidates');
+    location.reload();
+  } else {
+    alert('Error: ' + (data.error || 'unknown'));
+  }
+}
+
+document.querySelectorAll('th.sortable').forEach(th => {
+  th.addEventListener('click', () => {
+    const key = th.dataset.key;
+    const tbody = document.querySelector('#candidates-table tbody');
+    const rows = Array.from(tbody.querySelectorAll('tr'));
+    const isDesc = th.classList.contains('sort-desc');
+    const newDir = isDesc ? 'asc' : 'desc';
+    document.querySelectorAll('th.sortable').forEach(h => {
+      h.classList.remove('sort-asc', 'sort-desc');
+    });
+    th.classList.add('sort-' + newDir);
+    rows.sort((a, b) => {
+      const va = parseFloat(a.dataset[key]) || 0;
+      const vb = parseFloat(b.dataset[key]) || 0;
+      return newDir === 'desc' ? vb - va : va - vb;
+    });
+    rows.forEach(r => tbody.appendChild(r));
+  });
+});
+</script>"""
+
+        return _layout("Candidates", "/candidates", content) + extra_js
+
+    # ─── Purchases ─────────────────────────────────────────────────────────────
+
+    @app.get("/api/v1/purchases")
+    async def api_purchases() -> JSONResponse:
+        """История покупок (JSON)."""
+        try:
+            from fluxio.db.session import async_session_factory
+            from fluxio.db.unit_of_work import UnitOfWork
+            async with UnitOfWork(async_session_factory) as uow:
+                purchases = await uow.purchases.get_all(limit=100)
+                items = []
+                for p in purchases:
+                    items.append({
+                        "id": p.id,
+                        "product_id": p.product_id,
+                        "order_id": p.order_id,
+                        "market_hash_name": p.market_hash_name,
+                        "price_usd": float(p.price_usd) if p.price_usd else None,
+                        "steam_price_usd": float(p.steam_price_usd) if p.steam_price_usd else None,
+                        "discount_percent": float(p.discount_percent) if p.discount_percent else None,
+                        "status": p.status,
+                        "dry_run": p.dry_run,
+                        "purchased_at": p.purchased_at.isoformat() if p.purchased_at else None,
+                        "delivered_at": p.delivered_at.isoformat() if p.delivered_at else None,
+                    })
+            return JSONResponse({"purchases": items, "total": len(items)})
+        except Exception as e:
+            return JSONResponse({"error": str(e), "purchases": [], "total": 0})
+
+    @app.post("/api/v1/purchases/clear")
+    async def api_clear_purchases() -> JSONResponse:
+        """Удалить все покупки из PostgreSQL."""
+        try:
+            from sqlalchemy import delete
+
+            from fluxio.db.models import Purchase
+            from fluxio.db.session import async_session_factory
+            from fluxio.db.unit_of_work import UnitOfWork
+            async with UnitOfWork(async_session_factory) as uow:
+                result = await uow._session.execute(delete(Purchase))
+                count = result.rowcount
+                await uow.commit()
+            logger.info(f"Все покупки удалены из БД ({count} шт.)")
+            return JSONResponse({"cleared": count})
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    @app.get("/purchases", response_class=HTMLResponse)
+    async def page_purchases() -> str:
+        """Страница истории покупок."""
+        rows_html = ""
+        total = 0
+        total_spent = 0.0
+        total_profit = 0.0
+        dry_count = 0
+        live_count = 0
+        filtered_count = 0
+        total_median_profit = 0.0
+
+        try:
+            from urllib.parse import quote
+
+            from sqlalchemy import func as sa_func, select as sa_select
+
+            from fluxio.db.models import Purchase
+            from fluxio.db.session import async_session_factory
+            from fluxio.db.unit_of_work import UnitOfWork
+            async with UnitOfWork(async_session_factory) as uow:
+                all_purchases = await uow.purchases.get_all(limit=100_000)
+                total = len(all_purchases)
+                fee = config.fees.steam_fee_percent / 100
+
+                items_cache: dict[str, object] = {}
+                for p in all_purchases:
+                    if p.market_hash_name not in items_cache:
+                        items_cache[p.market_hash_name] = await uow.items.get_by_name(
+                            p.market_hash_name,
+                        )
+
+                for p in all_purchases:
+                    price = float(p.price_usd) if p.price_usd else 0
+                    steam = float(p.steam_price_usd) if p.steam_price_usd else 0
+                    if p.status == "filtered":
+                        filtered_count += 1
+                        continue
+                    if p.status in ("success", "pending"):
+                        total_spent += price
+                        if steam > 0 and price > 0:
+                            total_profit += steam * (1 - fee) - price
+                        item_obj = items_cache.get(p.market_hash_name)
+                        median = float(item_obj.steam_median_30d) if item_obj and item_obj.steam_median_30d else 0
+                        if median > 0 and price > 0:
+                            total_median_profit += median * (1 - fee) - price
+                        if p.dry_run:
+                            dry_count += 1
+                        else:
+                            live_count += 1
+
+                purchases = all_purchases[:200]
+                rows = []
+                for p in purchases:
+                    price = float(p.price_usd) if p.price_usd else 0
+                    steam = float(p.steam_price_usd) if p.steam_price_usd else 0
+                    disc = f"{float(p.discount_percent):.1f}%" if p.discount_percent else "—"
+                    ts = p.purchased_at.strftime("%Y-%m-%d %H:%M") if p.purchased_at else "—"
+
+                    item_obj = items_cache.get(p.market_hash_name)
+                    vol = item_obj.steam_volume_24h if item_obj and item_obj.steam_volume_24h else 0
+                    median = float(item_obj.steam_median_30d) if item_obj and item_obj.steam_median_30d else 0
+
+                    ratio = steam / median if median > 0 and steam > 0 else 0
+                    ratio_str = f"{ratio:.1f}x" if ratio > 0 else "—"
+                    ratio_color = "var(--text)"
+                    if ratio > 2.0:
+                        ratio_color = "var(--danger)"
+                    elif ratio > 1.5:
+                        ratio_color = "var(--warning)"
+
+                    median_str = f"${median:.4f}" if median > 0 else "—"
+
+                    profit = 0.0
+                    profit_str = "—"
+                    if steam > 0 and price > 0:
+                        net_steam = steam * (1 - fee)
+                        profit = net_steam - price
+                        color_p = "var(--success)" if profit > 0 else "var(--danger)"
+                        profit_str = f'<span style="color:{color_p}">${profit:.4f}</span>'
+
+                    median_profit = 0.0
+                    median_profit_str = "—"
+                    if median > 0 and price > 0:
+                        net_median = median * (1 - fee)
+                        median_profit = net_median - price
+                        mp_color = "var(--success)" if median_profit > 0 else "var(--danger)"
+                        median_profit_str = f'<span style="color:{mp_color}">${median_profit:.4f}</span>'
+
+                    status_map = {
+                        "success": "badge-success",
+                        "pending": "badge-warning",
+                        "failed": "badge-danger",
+                        "cancelled": "badge-muted",
+                        "filtered": "badge-danger",
+                    }
+                    status_badge = status_map.get(p.status, "badge-muted")
+                    dry_badge = ' <span class="badge badge-warning" style="font-size:10px">DRY</span>' if p.dry_run else ""
+                    is_filtered = p.status == "filtered"
+                    row_style = ' style="opacity:0.45"' if is_filtered else ""
+                    filter_note = ""
+                    if is_filtered and p.notes:
+                        filter_note = (
+                            f'<div style="font-size:10px;color:var(--danger);'
+                            f'max-width:250px;overflow:hidden;text-overflow:ellipsis;'
+                            f'white-space:nowrap" title="{p.notes}">{p.notes}</div>'
+                        )
+
+                    steam_url = f"https://steamcommunity.com/market/listings/570/{quote(p.market_hash_name)}"
+
+                    rows.append(
+                        f'<tr data-profit="{profit:.6f}" data-volume="{vol}" '
+                        f'data-median-profit="{median_profit:.6f}" data-ratio="{ratio:.4f}"'
+                        f'{row_style}>'
+                        f'<td><a href="{steam_url}" target="_blank" '
+                        f'style="color:var(--accent)">{p.market_hash_name}</a>'
+                        f'{filter_note}</td>'
+                        f"<td>${price:.4f}</td>"
+                        f"<td>${steam:.4f}</td>"
+                        f"<td>{median_str}</td>"
+                        f'<td style="color:{ratio_color}">{ratio_str}</td>'
+                        f"<td>{disc}</td>"
+                        f"<td>{profit_str}</td>"
+                        f"<td>{median_profit_str}</td>"
+                        f"<td>{vol or '—'}</td>"
+                        f'<td><span class="badge {status_badge}">{p.status}</span>{dry_badge}</td>'
+                        f"<td>{ts}</td>"
+                        f"</tr>"
+                    )
+                rows_html = "".join(rows)
+        except Exception as e:
+            logger.exception("Dashboard: ошибка на странице покупок")
+            rows_html = f"<tr><td colspan='11'>Error: {e}</td></tr>"
+
+        if not rows_html:
+            rows_html = '<tr><td colspan="11" style="text-align:center;color:var(--text-muted);padding:32px">No purchases yet.</td></tr>'
+
+        profit_color = "var(--success)" if total_profit >= 0 else "var(--danger)"
+        median_profit_color = "var(--success)" if total_median_profit >= 0 else "var(--danger)"
+
+        content = f"""
+<!-- Stats -->
+<div class="grid grid-auto" style="margin-bottom:20px">
+  <div class="stat-card">
+    <div class="stat-label">Purchased</div>
+    <div class="stat-value" style="color:var(--accent)">{dry_count + live_count}</div>
+    <div class="stat-sub">dry: {dry_count} &middot; live: {live_count}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Filtered Out</div>
+    <div class="stat-value" style="color:var(--danger)">{filtered_count}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Spent</div>
+    <div class="stat-value" style="color:var(--warning)">${total_spent:.2f}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Profit (Listing)</div>
+    <div class="stat-value" style="color:{profit_color}">${total_profit:.2f}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Profit (Median 30d)</div>
+    <div class="stat-value" style="color:{median_profit_color}">${total_median_profit:.2f}</div>
+  </div>
+</div>
+
+<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+  <span style="color:var(--text-muted)">Showing: {min(total, 200)} of {total}</span>
+  <button class="btn btn-danger" onclick="clearPurchases()">
+    <i data-lucide="trash-2" style="width:14px;height:14px"></i> Clear All
+  </button>
+</div>
+
+<div class="table-wrap" style="max-height:70vh;overflow:auto"><div class="table-scroll">
+<table id="purchases-table">
+<thead style="position:sticky;top:0;z-index:1"><tr>
+  <th>Item</th><th>Price</th><th>Steam</th>
+  <th>Median 30d</th>
+  <th class="sortable" data-key="ratio">Ratio</th>
+  <th>Discount</th>
+  <th class="sortable" data-key="profit">Profit</th>
+  <th class="sortable" data-key="median-profit">By Median</th>
+  <th class="sortable" data-key="volume">Vol 24h</th>
+  <th>Status</th><th>Date</th>
+</tr></thead>
+<tbody>{rows_html}</tbody>
+</table>
+</div></div>"""
+
+        extra_js = """<script>
+async function clearPurchases() {
+  if (!confirm('Delete ALL purchases from database? This cannot be undone.')) return;
+  const resp = await fetch('/api/v1/purchases/clear', {method: 'POST'});
+  const data = await resp.json();
+  if (data.cleared !== undefined) {
+    alert('Deleted: ' + data.cleared + ' purchases');
+    location.reload();
+  } else {
+    alert('Error: ' + (data.error || 'unknown'));
+  }
+}
+
+document.querySelectorAll('th.sortable').forEach(th => {
+  th.addEventListener('click', () => {
+    const key = th.dataset.key;
+    const tbody = document.querySelector('#purchases-table tbody');
+    const rows = Array.from(tbody.querySelectorAll('tr'));
+    const isDesc = th.classList.contains('sort-desc');
+    const newDir = isDesc ? 'asc' : 'desc';
+    document.querySelectorAll('th.sortable').forEach(h => {
+      h.classList.remove('sort-asc', 'sort-desc');
+    });
+    th.classList.add('sort-' + newDir);
+    const camelKey = key.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+    rows.sort((a, b) => {
+      const va = parseFloat(a.dataset[camelKey]) || 0;
+      const vb = parseFloat(b.dataset[camelKey]) || 0;
+      return newDir === 'desc' ? vb - va : va - vb;
+    });
+    rows.forEach(r => tbody.appendChild(r));
+  });
+});
+</script>"""
+
+        return _layout("Purchases", "/purchases", content) + extra_js
 
     return app
 
