@@ -14,7 +14,7 @@
     },
     "redis": {
       "command": "npx",
-      "args": ["-y", "mcp-server-redis", "--url", "redis://localhost:6379"]
+      "args": ["-y", "@gongrzhe/server-redis-mcp", "redis://localhost:6379"]
     }
   }
 }
