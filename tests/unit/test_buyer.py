@@ -160,7 +160,9 @@ async def test_buyer_low_discount_skipped():
         mock_config.trading.min_discount_percent = 45
         mock_config.trading.min_price_usd = 0.04
         mock_config.trading.max_price_usd = 5.0
-        mock_config.fees.steam_fee_percent = 13.0
+        mock_config.fees.steam_fee_percent = 15.0
+        mock_config.fees.steam_valve_fee_percent = 5.0
+        mock_config.fees.steam_game_fee_percent = 10.0
         mock_config.update_queue.buyer_interval_seconds = 60
         mock_config.games = [MagicMock(enabled=True, app_id=570)]
 
@@ -200,7 +202,9 @@ async def test_buyer_dry_run_purchase():
         mock_config.trading.min_price_usd = 0.04
         mock_config.trading.max_price_usd = 5.0
         mock_config.trading.max_same_item_count = 15
-        mock_config.fees.steam_fee_percent = 13.0
+        mock_config.fees.steam_fee_percent = 15.0
+        mock_config.fees.steam_valve_fee_percent = 5.0
+        mock_config.fees.steam_game_fee_percent = 10.0
         mock_config.update_queue.buyer_interval_seconds = 60
         mock_config.env.trade_url = "https://steamcommunity.com/tradeoffer/new/?partner=123"
         mock_config.games = [MagicMock(enabled=True, app_id=570)]
@@ -257,7 +261,9 @@ async def test_buyer_dry_run_no_trade_url():
         mock_config.trading.min_price_usd = 0.04
         mock_config.trading.max_price_usd = 5.0
         mock_config.trading.max_same_item_count = 15
-        mock_config.fees.steam_fee_percent = 13.0
+        mock_config.fees.steam_fee_percent = 15.0
+        mock_config.fees.steam_valve_fee_percent = 5.0
+        mock_config.fees.steam_game_fee_percent = 10.0
         mock_config.update_queue.buyer_interval_seconds = 60
         mock_config.env.trade_url = ""  # Пустой
         mock_config.games = [MagicMock(enabled=True, app_id=570)]

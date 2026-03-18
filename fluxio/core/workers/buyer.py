@@ -24,7 +24,7 @@ from typing import Any
 from loguru import logger
 
 from fluxio.api.cs2dt_client import CS2DTClient
-from fluxio.config import config
+from fluxio.config import FeesConfig, config
 from fluxio.core.safety import SafetyCheck, run_all_checks
 from fluxio.core.workers.base import BaseWorker
 from fluxio.db.session import async_session_factory
@@ -163,10 +163,13 @@ class BuyerWorker(BaseWorker):
                 await redis.srem(KEY_CANDIDATES, hash_name)
                 return 0
 
-            # Проверяем дисконт по актуальной цене CS2DT
-            fee = config.fees.steam_fee_percent / 100
-            net_steam = steam_price * (1 - fee)
-            discount = (net_steam - cs2dt_price) / net_steam * 100 if net_steam > 0 else 0
+            # Проверяем ROI по актуальной цене CS2DT
+            net_steam = FeesConfig.calc_net_steam(
+                steam_price,
+                config.fees.steam_valve_fee_percent,
+                config.fees.steam_game_fee_percent,
+            )
+            discount = (net_steam - cs2dt_price) / cs2dt_price * 100 if cs2dt_price > 0 else 0
 
             if discount < config.trading.min_discount_percent:
                 logger.debug(
@@ -179,7 +182,11 @@ class BuyerWorker(BaseWorker):
             # Safety net: если по медиане 30д сделка убыточна — отклонить
             steam_median_30d = float(item.steam_median_30d or 0)
             if steam_median_30d > 0:
-                net_median = steam_median_30d * (1 - fee)
+                net_median = FeesConfig.calc_net_steam(
+                    steam_median_30d,
+                    config.fees.steam_valve_fee_percent,
+                    config.fees.steam_game_fee_percent,
+                )
                 if net_median < cs2dt_price:
                     logger.info(
                         f"Buyer: [{hash_name}] safety net — убыток по медиане "
@@ -246,7 +253,7 @@ class BuyerWorker(BaseWorker):
                     break  # отсортировано по цене, дальше дороже
 
                 listing_discount = (
-                    (net_steam - listing_price) / net_steam * 100 if net_steam > 0 else 0
+                    (net_steam - listing_price) / listing_price * 100 if listing_price > 0 else 0
                 )
                 if listing_discount < config.trading.min_discount_percent:
                     break  # дальше дисконт только меньше
@@ -365,8 +372,11 @@ class BuyerWorker(BaseWorker):
             logger.warning(f"Buyer [DRY RUN]: ошибка проверки баланса: {e}")
 
         # Считаем ожидаемую прибыль
-        fee_pct = config.fees.steam_fee_percent / 100
-        net_steam = steam_price_usd * (1 - fee_pct)
+        net_steam = FeesConfig.calc_net_steam(
+            steam_price_usd,
+            config.fees.steam_valve_fee_percent,
+            config.fees.steam_game_fee_percent,
+        )
         expected_profit = net_steam - price_usd
 
         # Создаём Purchase

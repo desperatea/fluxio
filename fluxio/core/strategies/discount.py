@@ -73,10 +73,14 @@ class DiscountStrategy:
                 item=item,
             )
 
-        # Расчёт дисконта с учётом комиссии Steam
-        steam_fee = fees.steam_fee_percent / 100
-        net_steam = reference.median_price_usd * (1 - steam_fee)
-        discount = (net_steam - item_price) / net_steam * 100 if net_steam > 0 else 0
+        # Расчёт ROI с учётом комиссии Steam (поцентовый расчёт)
+        from fluxio.config import FeesConfig
+        net_steam = FeesConfig.calc_net_steam(
+            reference.median_price_usd,
+            fees.steam_valve_fee_percent,
+            fees.steam_game_fee_percent,
+        )
+        discount = (net_steam - item_price) / item_price * 100 if item_price > 0 else 0
         expected_profit = net_steam - item_price
 
         # Проверка: дисконт >= порога

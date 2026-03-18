@@ -1,5 +1,5 @@
 trading:
-  min_discount_percent: 45      # Минимальный дисконт к эталону (%)
+  min_discount_percent: 45      # Минимальный ROI — прибыль к вложенному (%)
   min_price_usd: 0.04            # Минимальная цена предмета (USD)
   max_price_usd: 1            # Максимальная цена предмета (USD)
   max_single_purchase_usd: 1  # Макс. бюджет на одну покупку (USD)
@@ -11,7 +11,9 @@ trading:
   semi_auto: false                # true = подтверждение покупки через Telegram
 
 fees:
-  steam_fee_percent: 13.0         # Комиссия Steam Market
+  steam_fee_percent: 15.0         # Общая комиссия Steam Market (справочно)
+  steam_valve_fee_percent: 5.0    # Комиссия Valve (мин. $0.01)
+  steam_game_fee_percent: 10.0    # Комиссия разработчика игры (мин. $0.01)
   cs2dt_fee_percent: 0.0          # Комиссия CS2DT
   c5game_fee_percent: 2.5         # Комиссия C5Game
   usd_to_cny_rate: 6.87      # Курс USD/CNY (для конвертации C5Game цен)

@@ -277,9 +277,13 @@ class UpdaterWorker(BaseWorker):
             else:
                 reference_price = steam_current
 
-            fee = config.fees.steam_fee_percent / 100
-            net_steam = reference_price * (1 - fee)
-            discount = (net_steam - item_price) / net_steam * 100
+            from fluxio.config import FeesConfig
+            net_steam = FeesConfig.calc_net_steam(
+                reference_price,
+                config.fees.steam_valve_fee_percent,
+                config.fees.steam_game_fee_percent,
+            )
+            discount = (net_steam - item_price) / item_price * 100 if item_price > 0 else 0
 
             # Проверяем ликвидность (объём продаж за 7 дней)
             volume_ok = steam_volume_7d >= config.trading.min_sales_volume_7d

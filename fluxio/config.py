@@ -89,9 +89,22 @@ class FeesConfig:
 
     def __init__(self, data: dict[str, Any]) -> None:
         self.steam_fee_percent: float = data.get("steam_fee_percent", 13.0)
+        self.steam_valve_fee_percent: float = data.get("steam_valve_fee_percent", 5.0)
+        self.steam_game_fee_percent: float = data.get("steam_game_fee_percent", 10.0)
         self.cs2dt_fee_percent: float = data.get("cs2dt_fee_percent", 0.0)
         self.c5game_fee_percent: float = data.get("c5game_fee_percent", 2.5)
         self.usd_to_cny_rate: float = data.get("usd_to_cny_rate", 7.25)
+
+    @staticmethod
+    def calc_net_steam(sale_price: float, valve_pct: float = 5.0, game_pct: float = 10.0) -> float:
+        """Реальная сумма на кошелёк после продажи на Steam Market.
+
+        Steam считает каждую комиссию отдельно, floor до цента, минимум $0.01.
+        """
+        import math
+        valve_fee = max(math.floor(sale_price * valve_pct) / 100, 0.01)
+        game_fee = max(math.floor(sale_price * game_pct) / 100, 0.01)
+        return round(sale_price - valve_fee - game_fee, 2)
 
 
 class MonitoringConfig:

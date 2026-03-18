@@ -45,7 +45,9 @@ def test_config_yaml(tmp_path: Path) -> Path:
             "semi_auto": False,
         },
         "fees": {
-            "steam_fee_percent": 13.0,
+            "steam_fee_percent": 15.0,
+            "steam_valve_fee_percent": 5.0,
+            "steam_game_fee_percent": 10.0,
             "cs2dt_fee_percent": 0.0,
             "c5game_fee_percent": 2.5,
         },

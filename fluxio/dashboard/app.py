@@ -1147,10 +1147,10 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
                         steam_p = float(item.steam_price_usd) if item.steam_price_usd else None
                         item_p = float(item.price_usd) if item.price_usd else None
                         discount = None
-                        if steam_p and item_p and steam_p > 0:
-                            fee = config.fees.steam_fee_percent / 100
-                            net = steam_p * (1 - fee)
-                            discount = round((net - item_p) / net * 100, 1) if net > 0 else None
+                        if steam_p and item_p and item_p > 0:
+                            from fluxio.config import FeesConfig
+                            net = FeesConfig.calc_net_steam(steam_p)
+                            discount = round((net - item_p) / item_p * 100, 1) if net > 0 else None
                         candidates.append({
                             "market_hash_name": name,
                             "price_usd": item_p,
@@ -1645,15 +1645,15 @@ connect();
                 # При наличии фильтров нужен полный проход; без фильтров — пагинация
                 if has_filters:
                     all_items = await uow.items.get_all()
-                    fee = config.fees.steam_fee_percent / 100
+                    from fluxio.config import FeesConfig
                     filtered: list[dict] = []
                     for item in all_items:
                         p = float(item.price_usd) if item.price_usd else None
                         sp = float(item.steam_price_usd) if item.steam_price_usd else None
                         d_val = 0.0
-                        if p and sp and sp > 0:
-                            net = sp * (1 - fee)
-                            d_val = (net - p) / net * 100 if net > 0 else 0
+                        if p and sp and p > 0:
+                            net = FeesConfig.calc_net_steam(sp)
+                            d_val = (net - p) / p * 100 if net > 0 else 0
                         vol = item.steam_volume_24h or 0
                         price_val = p or 0
                         # Применяем фильтры
@@ -1680,15 +1680,15 @@ connect();
                 else:
                     items = await uow.items.get_all_paginated(offset=offset, limit=limit)
                     total = await uow.items.count()
-                    fee = config.fees.steam_fee_percent / 100
+                    from fluxio.config import FeesConfig
                     result = []
                     for item in items:
                         p = float(item.price_usd) if item.price_usd else None
                         sp = float(item.steam_price_usd) if item.steam_price_usd else None
                         d_val = 0.0
-                        if p and sp and sp > 0:
-                            net = sp * (1 - fee)
-                            d_val = (net - p) / net * 100 if net > 0 else 0
+                        if p and sp and p > 0:
+                            net = FeesConfig.calc_net_steam(sp)
+                            d_val = (net - p) / p * 100 if net > 0 else 0
                         result.append({
                             "name": item.market_hash_name,
                             "price": p,
@@ -1988,9 +1988,9 @@ loadMore();
                         profit = ""
                         vol = item.steam_volume_24h or 0
                         if p > 0 and sp > 0:
-                            fee = config.fees.steam_fee_percent / 100
-                            net = sp * (1 - fee)
-                            d_val = (net - p) / net * 100 if net > 0 else 0
+                            from fluxio.config import FeesConfig
+                            net = FeesConfig.calc_net_steam(sp)
+                            d_val = (net - p) / p * 100 if net > 0 else 0
                             profit_val = net - p
                             discount = f"{d_val:.1f}%"
                             profit = f"${profit_val:.4f}"

@@ -109,9 +109,10 @@ class TestUpdaterDiscountLogic:
     """Тесты логики расчёта дисконта и определения кандидатов."""
 
     def test_high_discount_becomes_candidate(self):
-        """Дисконт >= min_discount → кандидат."""
+        """ROI >= min_discount → кандидат."""
         discount = self._calc_discount(steam=2.0, item_price=1.0, fee_pct=13.0)
-        assert discount == pytest.approx(42.53, rel=0.01)
+        # net = 2.0 - 0.10 - 0.20 = 1.70, ROI = (1.70 - 1.0) / 1.0 = 70%
+        assert discount == pytest.approx(70.0, rel=0.01)
 
     def test_low_discount_not_candidate(self):
         """Дисконт < min_discount → не кандидат."""
@@ -130,14 +131,14 @@ class TestUpdaterDiscountLogic:
 
     @staticmethod
     def _calc_discount(steam: float, item_price: float, fee_pct: float) -> float:
-        """Повторяем формулу из updater.py."""
+        """Повторяем формулу из updater.py (ROI с поцентовой комиссией)."""
         if steam <= 0 or item_price <= 0:
             return 0
-        fee = fee_pct / 100
-        net = steam * (1 - fee)
+        from fluxio.config import FeesConfig
+        net = FeesConfig.calc_net_steam(steam)
         if net <= 0:
             return 0
-        return (net - item_price) / net * 100
+        return (net - item_price) / item_price * 100
 
 
 # ─── Тесты кэша Redis ─────────────────────────────────────────────────────────
@@ -165,7 +166,9 @@ async def test_updater_uses_redis_cache_when_available():
         mock_config.anti_manipulation.max_spike_ratio = 2.0
         mock_config.anti_manipulation.max_price_cv = 0.5
         mock_config.anti_manipulation.min_sales_at_current_price = 5
-        mock_config.fees.steam_fee_percent = 13.0
+        mock_config.fees.steam_fee_percent = 15.0
+        mock_config.fees.steam_valve_fee_percent = 5.0
+        mock_config.fees.steam_game_fee_percent = 10.0
         mock_config.trading.min_discount_percent = 45
         mock_config.trading.min_price_usd = 0.04
         mock_config.trading.max_price_usd = 1.0
@@ -202,7 +205,9 @@ async def test_updater_fetches_steam_when_no_cache():
         mock_config.anti_manipulation.max_spike_ratio = 2.0
         mock_config.anti_manipulation.max_price_cv = 0.5
         mock_config.anti_manipulation.min_sales_at_current_price = 5
-        mock_config.fees.steam_fee_percent = 13.0
+        mock_config.fees.steam_fee_percent = 15.0
+        mock_config.fees.steam_valve_fee_percent = 5.0
+        mock_config.fees.steam_game_fee_percent = 10.0
         mock_config.trading.min_discount_percent = 45
         mock_config.trading.min_price_usd = 0.04
         mock_config.trading.max_price_usd = 1.0
@@ -239,7 +244,9 @@ async def test_updater_caches_steam_result():
         mock_config.anti_manipulation.max_spike_ratio = 2.0
         mock_config.anti_manipulation.max_price_cv = 0.5
         mock_config.anti_manipulation.min_sales_at_current_price = 5
-        mock_config.fees.steam_fee_percent = 13.0
+        mock_config.fees.steam_fee_percent = 15.0
+        mock_config.fees.steam_valve_fee_percent = 5.0
+        mock_config.fees.steam_game_fee_percent = 10.0
         mock_config.trading.min_discount_percent = 45
         mock_config.trading.min_price_usd = 0.04
         mock_config.trading.max_price_usd = 1.0

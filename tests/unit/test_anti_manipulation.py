@@ -470,7 +470,9 @@ class TestUpdaterEarlyEnrichmentCheck:
             mock_config.anti_manipulation.max_spike_ratio = 2.0
             mock_config.anti_manipulation.max_price_cv = 0.5
             mock_config.anti_manipulation.min_sales_at_current_price = 5
-            mock_config.fees.steam_fee_percent = 13.0
+            mock_config.fees.steam_fee_percent = 15.0
+            mock_config.fees.steam_valve_fee_percent = 5.0
+            mock_config.fees.steam_game_fee_percent = 10.0
             mock_config.trading.min_discount_percent = 45
             mock_config.trading.min_price_usd = 0.04
             mock_config.trading.max_price_usd = 1.0
@@ -534,7 +536,9 @@ class TestUpdaterRatioCheck:
             mock_config.anti_manipulation.max_price_to_median_ratio = 2.0
             mock_config.anti_manipulation.min_steam_listings = 15
             mock_config.games = [MagicMock(enabled=True, app_id=570)]
-            mock_config.fees.steam_fee_percent = 13.0
+            mock_config.fees.steam_fee_percent = 15.0
+            mock_config.fees.steam_valve_fee_percent = 5.0
+            mock_config.fees.steam_game_fee_percent = 10.0
 
             from fluxio.core.workers.updater import UpdaterWorker
             updater = UpdaterWorker(steam)
@@ -580,7 +584,9 @@ class TestUpdaterRatioCheck:
             mock_config.anti_manipulation.max_spike_ratio = 2.0
             mock_config.anti_manipulation.max_price_cv = 0.5
             mock_config.anti_manipulation.min_sales_at_current_price = 5
-            mock_config.fees.steam_fee_percent = 13.0
+            mock_config.fees.steam_fee_percent = 15.0
+            mock_config.fees.steam_valve_fee_percent = 5.0
+            mock_config.fees.steam_game_fee_percent = 10.0
             mock_config.trading.min_discount_percent = 45
             mock_config.trading.min_price_usd = 0.04
             mock_config.trading.max_price_usd = 1.0
@@ -655,7 +661,9 @@ class TestUpdaterHistogram:
             mock_config.anti_manipulation.min_steam_listings = 15
             mock_config.anti_manipulation.max_price_to_median_ratio = 2.0
             mock_config.games = [MagicMock(enabled=True, app_id=570)]
-            mock_config.fees.steam_fee_percent = 13.0
+            mock_config.fees.steam_fee_percent = 15.0
+            mock_config.fees.steam_valve_fee_percent = 5.0
+            mock_config.fees.steam_game_fee_percent = 10.0
 
             from fluxio.core.workers.updater import UpdaterWorker
             updater = UpdaterWorker(steam)
@@ -689,7 +697,9 @@ class TestUpdaterHistogram:
             mock_config.anti_manipulation.max_spike_ratio = 2.0
             mock_config.anti_manipulation.max_price_cv = 0.5
             mock_config.anti_manipulation.min_sales_at_current_price = 5
-            mock_config.fees.steam_fee_percent = 13.0
+            mock_config.fees.steam_fee_percent = 15.0
+            mock_config.fees.steam_valve_fee_percent = 5.0
+            mock_config.fees.steam_game_fee_percent = 10.0
             mock_config.trading.min_discount_percent = 45
             mock_config.trading.min_price_usd = 0.04
             mock_config.trading.max_price_usd = 1.0
@@ -757,7 +767,9 @@ class TestUpdaterHistogram:
             mock_config.anti_manipulation.max_spike_ratio = 2.0
             mock_config.anti_manipulation.max_price_cv = 0.5
             mock_config.anti_manipulation.min_sales_at_current_price = 5
-            mock_config.fees.steam_fee_percent = 13.0
+            mock_config.fees.steam_fee_percent = 15.0
+            mock_config.fees.steam_valve_fee_percent = 5.0
+            mock_config.fees.steam_game_fee_percent = 10.0
             mock_config.trading.min_discount_percent = 45
             mock_config.trading.min_price_usd = 0.04
             mock_config.trading.max_price_usd = 1.0
@@ -846,7 +858,9 @@ class TestBuyerSafetyNet:
             mock_config.trading.min_price_usd = 0.04
             mock_config.trading.max_price_usd = 1.0
             mock_config.trading.dry_run = True
-            mock_config.fees.steam_fee_percent = 13.0
+            mock_config.fees.steam_fee_percent = 15.0
+            mock_config.fees.steam_valve_fee_percent = 5.0
+            mock_config.fees.steam_game_fee_percent = 10.0
             mock_config.update_queue.buyer_interval_seconds = 60
             mock_config.games = [MagicMock(enabled=True, app_id=570)]
 
@@ -893,7 +907,9 @@ class TestBuyerSafetyNet:
             mock_config.trading.max_price_usd = 1.0
             mock_config.trading.max_same_item_count = 15
             mock_config.trading.dry_run = True
-            mock_config.fees.steam_fee_percent = 13.0
+            mock_config.fees.steam_fee_percent = 15.0
+            mock_config.fees.steam_valve_fee_percent = 5.0
+            mock_config.fees.steam_game_fee_percent = 10.0
             mock_config.update_queue.buyer_interval_seconds = 60
             mock_config.env.trade_url = "https://steamcommunity.com/tradeoffer/new/?partner=123"
             mock_config.games = [MagicMock(enabled=True, app_id=570)]
@@ -901,8 +917,8 @@ class TestBuyerSafetyNet:
             from fluxio.core.workers.buyer import BuyerWorker
             buyer = BuyerWorker(mock_cs2dt)
 
-            # Симулируем: дисконт достаточный (steam=$1.0, fee=13%, net=$0.87)
-            # discount = (0.87-0.04)/0.87 = 95% > 45%
+            # Симулируем: ROI достаточный (steam=$1.0, fee=13%, net=$0.87)
+            # ROI = (0.87-0.04)/0.04 = 2075% > 45%
             result = await buyer._process_item("Good Item", 0.04, 5, redis)
 
         # Покупка прошла safety net
@@ -931,14 +947,16 @@ class TestBuyerSafetyNet:
             mock_config.trading.min_price_usd = 0.04
             mock_config.trading.max_price_usd = 1.0
             mock_config.trading.max_same_item_count = 15
-            mock_config.fees.steam_fee_percent = 13.0
+            mock_config.fees.steam_fee_percent = 15.0
+            mock_config.fees.steam_valve_fee_percent = 5.0
+            mock_config.fees.steam_game_fee_percent = 10.0
             mock_config.update_queue.buyer_interval_seconds = 60
             mock_config.games = [MagicMock(enabled=True, app_id=570)]
 
             from fluxio.core.workers.buyer import BuyerWorker
             buyer = BuyerWorker(mock_cs2dt)
-            # Дисконт: net_steam = 2.0*0.87 = 1.74
-            # discount = (1.74-0.50)/1.74 = 71% > 45% → ОК
+            # ROI: net_steam = 2.0*0.87 = 1.74
+            # ROI = (1.74-0.50)/0.50 = 248% > 45% → ОК
             # steam_median_30d = 0 → safety net пропускается
             # cs2dt_item_id = 99999 → проходит
             # get_sell_list → пустой список → return 0

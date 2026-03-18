@@ -26,7 +26,7 @@ def _make_config(
     min_discount: float = 15.0,
     min_price: float = 0.10,
     max_price: float = 5.0,
-    steam_fee: float = 13.0,
+    steam_fee: float = 15.0,
     min_sales_7d: int = 10,
     blacklist: list[str] | None = None,
 ) -> MagicMock:
@@ -37,6 +37,8 @@ def _make_config(
     cfg.trading.max_price_usd = max_price
     cfg.trading.min_sales_volume_7d = min_sales_7d
     cfg.fees.steam_fee_percent = steam_fee
+    cfg.fees.steam_valve_fee_percent = 5.0
+    cfg.fees.steam_game_fee_percent = 10.0
     cfg.blacklist.items = blacklist or []
     return cfg
 
@@ -72,28 +74,26 @@ class TestDiscountStrategy:
     """Тесты стратегии дисконта."""
 
     def test_high_discount_should_buy(self):
-        """Высокий дисконт → should_buy=True."""
-        # Steam $2.0, CS2DT $1.0, fee 13%
-        # net = 2.0 * 0.87 = 1.74
-        # discount = (1.74 - 1.0) / 1.74 = 42.5%
+        """Высокий ROI → should_buy=True."""
+        # Steam $2.0, net = 2.0 - 0.10 - 0.20 = 1.70
+        # ROI = (1.70 - 1.0) / 1.0 = 70%
         strategy = DiscountStrategy(_make_config())
         result = strategy.analyze(_make_item(1.0), _make_reference(2.0))
 
         assert result.should_buy is True
-        assert result.discount_percent == pytest.approx(42.53, rel=0.01)
+        assert result.discount_percent == pytest.approx(70.0, rel=0.01)
         assert result.expected_profit_usd > 0
         assert "discount" in result.tags
 
     def test_low_discount_should_not_buy(self):
-        """Низкий дисконт → should_buy=False."""
-        # Steam $1.2, CS2DT $1.0
-        # net = 1.2 * 0.87 = 1.044
-        # discount = (1.044 - 1.0) / 1.044 = 4.2%
+        """Низкий ROI → should_buy=False."""
+        # Steam $1.2, net = 1.2 - 0.06 - 0.12 = 1.02
+        # ROI = (1.02 - 1.0) / 1.0 = 2.0%
         strategy = DiscountStrategy(_make_config())
         result = strategy.analyze(_make_item(1.0), _make_reference(1.2))
 
         assert result.should_buy is False
-        assert "4.2%" in result.reason or "Дисконт" in result.reason
+        assert "2.0%" in result.reason or "Дисконт" in result.reason
 
     def test_negative_discount_should_not_buy(self):
         """Отрицательный дисконт (CS2DT дороже Steam) → should_buy=False."""
@@ -153,12 +153,12 @@ class TestDiscountStrategy:
         assert 0 < result.confidence <= 1.0
 
     def test_exact_threshold_should_buy(self):
-        """Дисконт ровно = min_discount → should_buy=True."""
-        # Подберём цену чтобы дисконт был ровно 15%
-        # net = steam * 0.87, discount = (net - price) / net * 100 = 15
-        # price = net * 0.85 = steam * 0.87 * 0.85
+        """ROI ровно = min_discount → should_buy=True."""
+        # steam = 2.0, net = 2.0 - 0.10 - 0.20 = 1.70
+        # ROI = (1.70 - price) / price = 15% → price = 1.70 / 1.15
         steam = 2.0
-        price = steam * 0.87 * 0.85  # = 1.479
+        # net = 1.70, price = 1.70 / 1.15 ≈ 1.4782..., округлим вниз
+        price = 1.478  # ROI = (1.70 - 1.478) / 1.478 = 15.02%
         strategy = DiscountStrategy(_make_config(min_discount=15.0))
         result = strategy.analyze(_make_item(price), _make_reference(steam))
 

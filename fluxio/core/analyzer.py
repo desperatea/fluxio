@@ -64,8 +64,14 @@ class ProfitAnalyzer:
         if not steam_price_usd or steam_price_usd <= 0:
             return AnalysisResult(False, "цена Steam <= 0", item)
 
-        # 2. Дисконт (всё в USD)
-        discount = (steam_price_usd - item_price_usd) / steam_price_usd * 100
+        # 2. ROI (всё в USD, с учётом поцентовой комиссии Steam)
+        from fluxio.config import FeesConfig
+        net_steam = FeesConfig.calc_net_steam(
+            steam_price_usd,
+            config.fees.steam_valve_fee_percent,
+            config.fees.steam_game_fee_percent,
+        )
+        discount = (net_steam - item_price_usd) / item_price_usd * 100 if item_price_usd > 0 else 0
         min_discount = config.trading.min_discount_percent
 
         if discount < min_discount:
