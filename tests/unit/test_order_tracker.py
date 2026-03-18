@@ -75,6 +75,7 @@ def mock_uow():
     uow.purchases.get_stale_orders = AsyncMock(return_value=[])
     uow.commit = AsyncMock()
     uow._session = _mock_session_with_purchase(None)
+    uow.session = uow._session
     return uow
 
 
@@ -102,6 +103,7 @@ async def test_tracker_order_delivered(mock_cs2dt, mock_uow):
     mock_uow.purchases.get_stale_orders.return_value = [order]
     mock_cs2dt.get_order_detail.return_value = {"status": 10}
     mock_uow._session = _mock_session_with_purchase(purchase)
+    mock_uow.session = mock_uow._session
 
     with patch("fluxio.core.workers.order_tracker.UnitOfWork", return_value=mock_uow):
         from fluxio.core.workers.order_tracker import OrderTrackerWorker
@@ -122,6 +124,7 @@ async def test_tracker_order_failed(mock_cs2dt, mock_uow):
     mock_uow.purchases.get_stale_orders.return_value = [order]
     mock_cs2dt.get_order_detail.return_value = {"status": 11}
     mock_uow._session = _mock_session_with_purchase(purchase)
+    mock_uow.session = mock_uow._session
 
     with patch("fluxio.core.workers.order_tracker.UnitOfWork", return_value=mock_uow):
         from fluxio.core.workers.order_tracker import OrderTrackerWorker
@@ -140,6 +143,7 @@ async def test_tracker_stale_p2p_auto_cancel(mock_cs2dt, mock_uow):
     purchase = _make_purchase()
     mock_uow.purchases.get_stale_orders.return_value = [order]
     mock_uow._session = _mock_session_with_purchase(purchase)
+    mock_uow.session = mock_uow._session
 
     with patch("fluxio.core.workers.order_tracker.UnitOfWork", return_value=mock_uow):
         from fluxio.core.workers.order_tracker import OrderTrackerWorker
@@ -198,4 +202,4 @@ async def test_tracker_same_status_no_update(mock_cs2dt, mock_uow):
 
     # Статус не поменялся, Purchase не должен обновляться
     assert order.status == "pending"
-    mock_uow._session.execute.assert_not_called()
+    mock_uow.session.execute.assert_not_called()

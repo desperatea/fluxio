@@ -57,7 +57,7 @@ class SteamClient:
         for suffix in ("", "2", "3", "4", "5"):
             login_secure = os.getenv(f"STEAM_LOGIN_SECURE{suffix}", "").strip("'\"")
             session_id = os.getenv(f"SESSION_ID{suffix}", "").strip("'\"")
-            browser_id = os.getenv(f"BROUSER_ID{suffix}", "").strip("'\"")
+            browser_id = os.getenv(f"BROWSER_ID{suffix}", "").strip("'\"")
             if login_secure:
                 cookies: dict[str, str] = {"steamLoginSecure": login_secure}
                 if session_id:
@@ -74,7 +74,7 @@ class SteamClient:
             if not login_secure:
                 continue
             session_id = os.getenv(f"SESSION_ID{suffix}", "").strip("'\"")
-            browser_id = os.getenv(f"BROUSER_ID{suffix}", "").strip("'\"")
+            browser_id = os.getenv(f"BROWSER_ID{suffix}", "").strip("'\"")
             proxy_raw = os.getenv(f"STEAM_PROXY{suffix}", "").strip("'\"")
 
             cookies: dict[str, str] = {"steamLoginSecure": login_secure}
@@ -140,6 +140,7 @@ class SteamClient:
 
         # 2. Дополняем прокси из .env (если файл не найден или пуст)
         if not self._proxy_urls:
+            from urllib.parse import urlparse
             proxy_env_keys = ["STEAM_PROXY", "HTTP_PROXY", "HTTP_PROXY2", "HTTPS_PROXY"]
             seen_hosts: set[str] = set()
             for key in proxy_env_keys:
@@ -148,7 +149,8 @@ class SteamClient:
                     continue
                 proxy_url = self._parse_proxy(raw_proxy)
                 if proxy_url:
-                    host_port = raw_proxy.split(":")[0] + ":" + raw_proxy.split(":")[1] if ":" in raw_proxy else raw_proxy
+                    parsed = urlparse(proxy_url)
+                    host_port = f"{parsed.hostname}:{parsed.port}"
                     if host_port not in seen_hosts:
                         seen_hosts.add(host_port)
                         self._proxy_urls.append(proxy_url)

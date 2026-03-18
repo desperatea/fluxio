@@ -45,6 +45,11 @@ class UnitOfWork:
             await self.rollback()
         await self._session.close()
 
+    @property
+    def session(self) -> AsyncSession:
+        """Публичный доступ к сессии (для raw-запросов)."""
+        return self._session
+
     async def commit(self) -> None:
         """Зафиксировать все изменения."""
         await self._session.commit()

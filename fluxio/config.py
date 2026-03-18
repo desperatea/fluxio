@@ -230,6 +230,10 @@ class AppConfig:
             errors.append(
                 f"min_discount_percent ({t.min_discount_percent}) должен быть > 0"
             )
+        if t.min_discount_percent > 99:
+            errors.append(
+                f"min_discount_percent ({t.min_discount_percent}) не может быть > 99%"
+            )
         if t.daily_limit_usd <= 0:
             errors.append(
                 f"daily_limit_usd ({t.daily_limit_usd}) должен быть > 0"

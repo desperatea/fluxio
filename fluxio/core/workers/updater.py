@@ -206,8 +206,17 @@ class UpdaterWorker(BaseWorker):
                 return
 
             # Enrichment уже проверен в шаге 0 — используем 30д медиану из БД
-            steam_median_30d = float(item.steam_median_30d)
+            steam_median_30d = float(item.steam_median_30d or 0)
             steam_volume_7d = item.steam_volume_7d or 0
+
+            if steam_median_30d <= 0:
+                # Медиана отсутствует — отправляем на повторное обогащение
+                await redis_client.sadd(KEY_ENRICH_QUEUE, hash_name)
+                await redis_client.srem(KEY_CANDIDATES, hash_name)
+                logger.debug(
+                    f"Updater: [{hash_name}] медиана 30д=0 → в enricher"
+                )
+                return
 
             am = config.anti_manipulation
 
@@ -283,7 +292,7 @@ class UpdaterWorker(BaseWorker):
             # ── Пункт 2: Пересчёт sales@price из истории при расхождении цены ──
             if steam_median_30d > 0 and steam_current / steam_median_30d > 1.5:
                 fresh_sales = await self._recalc_sales_at_price(
-                    uow._session, hash_name, steam_current,
+                    uow.session, hash_name, steam_current,
                 )
                 if fresh_sales is not None:
                     logger.debug(

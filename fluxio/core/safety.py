@@ -17,9 +17,12 @@ from fluxio.db.repository import get_same_item_count_24h, get_today_spent, is_pr
 class SafetyCheck:
     """Результат проверки безопасности."""
 
-    def __init__(self, passed: bool, reason: str = "") -> None:
+    def __init__(self, passed: bool, reason: str = "", *, fatal: bool = False) -> None:
         self.passed = passed
         self.reason = reason
+        # fatal=True → нужно прекратить ВСЕ покупки (баланс, дневной лимит)
+        # fatal=False → можно пропустить этот предмет и продолжить (идемпотентность)
+        self.fatal = fatal
 
     def __bool__(self) -> bool:
         return self.passed
@@ -47,12 +50,12 @@ async def check_balance(
             f"(${config.trading.stop_balance_usd:.2f})"
         )
         logger.warning(msg)
-        return SafetyCheck(False, msg)
+        return SafetyCheck(False, msg, fatal=True)
 
     if balance < item_price:
         msg = f"Недостаточно средств: баланс ${balance:.2f}, цена ${item_price:.2f}"
         logger.info(msg)
-        return SafetyCheck(False, msg)
+        return SafetyCheck(False, msg, fatal=True)
 
     return SafetyCheck(True)
 
@@ -69,7 +72,7 @@ async def check_daily_limit(session: AsyncSession, item_price: float) -> SafetyC
             f"${daily_limit:.2f}, осталось ${remaining:.2f}"
         )
         logger.warning(msg)
-        return SafetyCheck(False, msg)
+        return SafetyCheck(False, msg, fatal=True)
 
     return SafetyCheck(True)
 

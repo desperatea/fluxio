@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any, Sequence
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fluxio.db.models import Item, SaleListing
@@ -29,6 +29,23 @@ class ItemRepository:
             select(Item).order_by(Item.market_hash_name)
         )
         return result.scalars().all()
+
+    async def get_all_paginated(
+        self, offset: int = 0, limit: int = 50
+    ) -> Sequence[Item]:
+        """Получить предметы с пагинацией."""
+        result = await self._session.execute(
+            select(Item)
+            .order_by(Item.market_hash_name)
+            .offset(offset)
+            .limit(limit)
+        )
+        return result.scalars().all()
+
+    async def count(self) -> int:
+        """Общее количество предметов."""
+        result = await self._session.execute(select(func.count(Item.id)))
+        return result.scalar_one()
 
     async def get_candidates(
         self,

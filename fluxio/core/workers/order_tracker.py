@@ -100,7 +100,7 @@ class OrderTrackerWorker(BaseWorker):
                 if order.purchase_id:
                     from fluxio.db.models import Purchase
                     from sqlalchemy import select
-                    result = await uow._session.execute(
+                    result = await uow.session.execute(
                         select(Purchase).where(Purchase.id == order.purchase_id)
                     )
                     purchase = result.scalar_one_or_none()
@@ -140,7 +140,7 @@ class OrderTrackerWorker(BaseWorker):
         if order.purchase_id:
             from fluxio.db.models import Purchase
             from sqlalchemy import select
-            result = await uow._session.execute(
+            result = await uow.session.execute(
                 select(Purchase).where(Purchase.id == order.purchase_id)
             )
             purchase = result.scalar_one_or_none()

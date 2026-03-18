@@ -95,8 +95,10 @@ def _make_uow(item=None):
     uow.commit = AsyncMock()
     mock_result = MagicMock()
     mock_result.scalar = MagicMock(return_value=20)
-    uow._session = AsyncMock()
-    uow._session.execute = AsyncMock(return_value=mock_result)
+    mock_session = AsyncMock()
+    mock_session.execute = AsyncMock(return_value=mock_result)
+    uow._session = mock_session
+    uow.session = mock_session
     return uow
 
 

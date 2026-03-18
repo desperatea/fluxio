@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+import html as html_mod
 from datetime import datetime, timezone
 from typing import Any
 
@@ -20,6 +21,11 @@ from fluxio.services.container import ServiceContainer
 from fluxio.utils.circuit_breaker import CircuitBreaker
 from fluxio.utils.logger import get_log_buffer, subscribe_logs, unsubscribe_logs
 from loguru import logger
+
+
+def _esc(value: object) -> str:
+    """Экранировать значение для безопасной вставки в HTML."""
+    return html_mod.escape(str(value))
 
 # Время запуска
 _started_at = datetime.now(timezone.utc)
@@ -683,6 +689,25 @@ th.sort-asc::after { content: ' \2191'; opacity: 1; }
   cursor: pointer;
 }
 
+.steam-icon-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  transition: background .15s, border-color .15s;
+  text-decoration: none;
+}
+.steam-icon-link:hover {
+  background: #1b2838;
+  border-color: #66c0f4;
+}
+.steam-icon-link:hover svg { fill: #66c0f4; }
+.steam-icon-link svg { transition: fill .15s; }
+
 /* ─── Filter Panel ────────────────────────────────────────────────────── */
 .filter-panel {
   background: var(--bg-surface);
@@ -1216,10 +1241,10 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
             from fluxio.db.session import async_session_factory
             from fluxio.db.unit_of_work import UnitOfWork
             async with UnitOfWork(async_session_factory) as uow:
-                total_items = (await uow._session.execute(
+                total_items = (await uow.session.execute(
                     select(sa_func.count()).select_from(Item)
                 )).scalar() or 0
-                enriched_count = (await uow._session.execute(
+                enriched_count = (await uow.session.execute(
                     select(sa_func.count()).select_from(Item).where(Item.enriched_at.isnot(None))
                 )).scalar() or 0
         except Exception:
@@ -1289,7 +1314,7 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
             from fluxio.db.models import Purchase
             async with UnitOfWork(async_session_factory) as uow:
                 spent_today = await uow.purchases.get_today_spent()
-                result = await uow._session.execute(
+                result = await uow.session.execute(
                     sa_sel(sa_func.coalesce(sa_func.sum(Purchase.price_usd), 0))
                     .where(Purchase.dry_run == False)
                     .where(Purchase.status.in_(["pending", "success"]))
@@ -1318,15 +1343,15 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
                     last = st.last_run_at.strftime("%H:%M:%S") if st.last_run_at else "—"
                     err_html = ""
                     if st.last_error:
-                        err_html = f'<div style="color:var(--danger);font-size:11px;margin-top:4px">{st.last_error}</div>'
+                        err_html = f'<div style="color:var(--danger);font-size:11px;margin-top:4px">{_esc(st.last_error)}</div>'
                     if st.paused:
-                        btn = f'<button class="worker-btn" onclick="workerAction(\'{st.name}\',\'resume\')">&#9654; Resume</button>'
+                        btn = f'<button class="worker-btn" onclick="workerAction(\'{_esc(st.name)}\',\'resume\')">&#9654; Resume</button>'
                     else:
-                        btn = f'<button class="worker-btn" onclick="workerAction(\'{st.name}\',\'pause\')">&#9646;&#9646; Pause</button>'
+                        btn = f'<button class="worker-btn" onclick="workerAction(\'{_esc(st.name)}\',\'pause\')">&#9646;&#9646; Pause</button>'
                     workers_html += f"""<div class="worker-card">
                       <div class="worker-dot {dot_class}"></div>
                       <div class="worker-info">
-                        <div class="worker-name">{st.name}</div>
+                        <div class="worker-name">{_esc(st.name)}</div>
                         <div class="worker-meta">Cycles: {st.cycles} &middot; Processed: {st.items_processed} &middot; Last: {last}</div>
                         {err_html}
                       </div>
@@ -1593,71 +1618,120 @@ connect();
 
         return _layout("Logs", "/admin/logs", content) + extra_js
 
-    # ─── Catalog (/items) ──────────────────────────────────────────────────────
+    # ─── Catalog API ────────────────────────────────────────────────────────────
 
-    @app.get("/items", response_class=HTMLResponse)
-    async def page_catalog() -> str:
-        """Каталог предметов из БД — карточки с фильтрацией."""
-        items_data: list[dict[str, Any]] = []
-        total = 0
+    @app.get("/api/v1/items/catalog")
+    async def api_items_catalog(
+        offset: int = 0,
+        limit: int = 60,
+        min_discount: float = 0,
+        min_volume: int = 0,
+        min_price: float = 0,
+        max_price: float = 0,
+    ) -> JSONResponse:
+        """Каталог предметов с пагинацией и серверной фильтрацией (JSON).
 
+        Фильтры применяются на стороне сервера: discount считается
+        по формуле (steam_net - price) / steam_net * 100.
+        Когда фильтры активны, offset/limit работают по отфильтрованным данным.
+        """
+        limit = min(limit, 200)  # Макс. 200 за запрос
+        has_filters = min_discount > 0 or min_volume > 0 or min_price > 0 or (0 < max_price < 999)
         try:
             from fluxio.db.session import async_session_factory
             from fluxio.db.unit_of_work import UnitOfWork
             async with UnitOfWork(async_session_factory) as uow:
-                all_items = await uow.items.get_all()
-                total = len(all_items)
-                fee = config.fees.steam_fee_percent / 100
-                for item in all_items[:200]:
-                    p = float(item.price_usd) if item.price_usd else None
-                    sp = float(item.steam_price_usd) if item.steam_price_usd else None
-                    d_val = 0.0
-                    if p and sp and sp > 0:
-                        net = sp * (1 - fee)
-                        d_val = (net - p) / net * 100 if net > 0 else 0
-                    items_data.append({
-                        "name": item.market_hash_name,
-                        "price": p,
-                        "steam": sp,
-                        "discount": d_val,
-                        "volume": item.steam_volume_24h or 0,
-                        "updated": item.steam_updated_at.strftime("%H:%M") if hasattr(item, "steam_updated_at") and item.steam_updated_at else "",
-                    })
+                # Загружаем все предметы для фильтрации дисконта (он вычисляемый)
+                # При наличии фильтров нужен полный проход; без фильтров — пагинация
+                if has_filters:
+                    all_items = await uow.items.get_all()
+                    fee = config.fees.steam_fee_percent / 100
+                    filtered: list[dict] = []
+                    for item in all_items:
+                        p = float(item.price_usd) if item.price_usd else None
+                        sp = float(item.steam_price_usd) if item.steam_price_usd else None
+                        d_val = 0.0
+                        if p and sp and sp > 0:
+                            net = sp * (1 - fee)
+                            d_val = (net - p) / net * 100 if net > 0 else 0
+                        vol = item.steam_volume_24h or 0
+                        price_val = p or 0
+                        # Применяем фильтры
+                        if d_val < min_discount:
+                            continue
+                        if vol < min_volume:
+                            continue
+                        if min_price > 0 and price_val < min_price:
+                            continue
+                        if 0 < max_price < 999 and price_val > max_price:
+                            continue
+                        filtered.append({
+                            "name": item.market_hash_name,
+                            "price": p,
+                            "steam": sp,
+                            "discount": round(d_val, 2),
+                            "volume": vol,
+                            "image_url": item.image_url or "",
+                            "app_id": item.app_id,
+                            "updated": item.steam_updated_at.strftime("%H:%M") if hasattr(item, "steam_updated_at") and item.steam_updated_at else "",
+                        })
+                    total = len(filtered)
+                    result = filtered[offset:offset + limit]
+                else:
+                    items = await uow.items.get_all_paginated(offset=offset, limit=limit)
+                    total = await uow.items.count()
+                    fee = config.fees.steam_fee_percent / 100
+                    result = []
+                    for item in items:
+                        p = float(item.price_usd) if item.price_usd else None
+                        sp = float(item.steam_price_usd) if item.steam_price_usd else None
+                        d_val = 0.0
+                        if p and sp and sp > 0:
+                            net = sp * (1 - fee)
+                            d_val = (net - p) / net * 100 if net > 0 else 0
+                        result.append({
+                            "name": item.market_hash_name,
+                            "price": p,
+                            "steam": sp,
+                            "discount": round(d_val, 2),
+                            "volume": item.steam_volume_24h or 0,
+                            "image_url": item.image_url or "",
+                            "app_id": item.app_id,
+                            "updated": item.steam_updated_at.strftime("%H:%M") if hasattr(item, "steam_updated_at") and item.steam_updated_at else "",
+                        })
+            return JSONResponse({"items": result, "total": total, "offset": offset, "limit": limit})
         except Exception as e:
-            logger.exception("Dashboard: ошибка на странице каталога")
+            logger.exception("Dashboard: ошибка API каталога")
+            return JSONResponse({"error": str(e), "items": [], "total": 0}, status_code=500)
 
-        # Генерируем карточки (первые 40 видимы, остальные скрыты)
-        PAGE_SIZE = 40
-        cards_html = ""
-        for idx, it in enumerate(items_data):
-            price_str = f"${it['price']:.2f}" if it["price"] else "—"
-            steam_str = f"${it['steam']:.2f}" if it["steam"] else "—"
-            discount_badge = ""
-            if it["discount"] >= config.trading.min_discount_percent:
-                discount_badge = f'<span class="badge badge-success">{it["discount"]:.1f}%</span>'
-            elif it["discount"] > 0:
-                discount_badge = f'<span class="badge badge-info">{it["discount"]:.1f}%</span>'
+    # ─── Catalog (/items) ──────────────────────────────────────────────────────
 
-            hidden = ' style="display:none"' if idx >= PAGE_SIZE else ""
-            cards_html += f"""<div class="item-card" data-discount="{it['discount']:.2f}" data-volume="{it['volume']}" data-price="{it['price'] or 0}"{hidden}>
-  <div class="item-img">
-    <i data-lucide="package" style="width:40px;height:40px;color:var(--text-muted)"></i>
-  </div>
-  <div class="item-name" title="{it['name']}">{it['name']}</div>
-  <div class="item-rarity">Vol: {it['volume']} {discount_badge}</div>
-  <div class="item-footer">
-    <div class="item-price">{price_str}</div>
-    <div style="font-size:11px;color:var(--text-muted)">Steam: {steam_str}</div>
-  </div>
-</div>"""
+    @app.get("/items", response_class=HTMLResponse)
+    async def page_catalog() -> str:
+        """Каталог предметов из БД — карточки с фильтрацией и ленивой подгрузкой."""
+        total = 0
+        try:
+            from fluxio.db.session import async_session_factory
+            from fluxio.db.unit_of_work import UnitOfWork
+            async with UnitOfWork(async_session_factory) as uow:
+                total = await uow.items.count()
+        except Exception:
+            logger.exception("Dashboard: ошибка подсчёта предметов")
 
-        if not cards_html:
-            cards_html = '<div class="empty" style="grid-column:1/-1"><p>No items found</p></div>'
+        min_discount = config.trading.min_discount_percent
+
+        # Стиль для числовых input в фильтрах
+        input_style = (
+            "width:100%;padding:6px 8px;background:var(--bg-card);border:1px solid var(--border);"
+            "border-radius:6px;color:var(--text);font-size:13px;outline:none"
+        )
 
         content = f"""
 <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:8px">
   <div style="color:var(--text-muted);font-size:13px">
-    Total: <strong style="color:var(--text)">{total}</strong> &middot; Showing: {min(total, 200)}
+    Total: <strong style="color:var(--text)" id="totalCount">{total}</strong> &middot;
+    Loaded: <strong style="color:var(--text)" id="loadedCount">0</strong>
+    <span id="filteredInfo" style="display:none"> &middot; Matched: <strong style="color:var(--accent)" id="matchedCount">0</strong></span>
   </div>
   <div style="display:flex;gap:8px">
     <button class="btn btn-ghost" onclick="toggleFilter()" id="filterBtn">
@@ -1671,67 +1745,199 @@ connect();
   <div class="filter-panel" id="filterPanel">
     <h3>Filters</h3>
     <div class="filter-group">
-      <div class="filter-label"><span>Min Discount</span><span id="discountVal">0%</span></div>
-      <input type="range" min="0" max="50" value="0" id="filterDiscount" oninput="applyFilters()">
+      <div class="filter-label"><span>Min Discount %</span></div>
+      <input type="number" min="0" max="99" value="0" step="1" id="filterDiscount"
+        style="{input_style}" onchange="onFilterChange()" onkeyup="onFilterKeyup(event)">
     </div>
     <div class="filter-group">
-      <div class="filter-label"><span>Min Volume</span><span id="volumeVal">0</span></div>
-      <input type="range" min="0" max="1000" value="0" step="10" id="filterVolume" oninput="applyFilters()">
+      <div class="filter-label"><span>Min Volume (24h)</span></div>
+      <input type="number" min="0" max="100000" value="0" step="1" id="filterVolume"
+        style="{input_style}" onchange="onFilterChange()" onkeyup="onFilterKeyup(event)">
     </div>
     <div class="filter-group">
-      <div class="filter-label"><span>Max Price</span><span id="priceVal">$1000</span></div>
-      <input type="range" min="1" max="1000" value="1000" id="filterPrice" oninput="applyFilters()">
+      <div class="filter-label"><span>Min Price $</span></div>
+      <input type="number" min="0" max="100000" value="0" step="0.01" id="filterMinPrice"
+        style="{input_style}" placeholder="0 = no limit" onchange="onFilterChange()" onkeyup="onFilterKeyup(event)">
     </div>
+    <div class="filter-group">
+      <div class="filter-label"><span>Max Price $</span></div>
+      <input type="number" min="0" max="100000" value="0" step="0.01" id="filterPrice"
+        style="{input_style}" placeholder="0 = no limit" onchange="onFilterChange()" onkeyup="onFilterKeyup(event)">
+    </div>
+    <button class="btn btn-ghost" style="width:100%;margin-top:8px" onclick="resetFilters()">Reset</button>
   </div>
 
   <!-- Items Grid -->
   <div class="items-grid" id="itemsGrid" style="display:grid;grid-template-columns:repeat(auto-fill, minmax(220px, 1fr));gap:14px;align-content:start">
-    {cards_html}
+    <div class="empty" style="grid-column:1/-1" id="loadingMsg"><p>Loading...</p></div>
   </div>
 </div>
 <div style="text-align:center;margin-top:20px" id="loadMoreWrap">
-  <button class="btn btn-ghost" id="loadMoreBtn" onclick="showMore()" {'style="display:none"' if len(items_data) <= PAGE_SIZE else ''}>
-    Show More ({len(items_data) - PAGE_SIZE} remaining)
+  <button class="btn btn-ghost" id="loadMoreBtn" onclick="loadMore()" style="display:none">
+    Show More
   </button>
 </div>"""
 
-        extra_js = """<script>
-let visibleCount = 40;
-function showMore() {
-  const cards = document.querySelectorAll('.item-card');
-  const newLimit = visibleCount + 40;
-  cards.forEach((card, i) => {
-    if (i < newLimit) card.style.display = '';
-  });
-  visibleCount = newLimit;
-  if (visibleCount >= cards.length) {
-    document.getElementById('loadMoreBtn').style.display = 'none';
-  } else {
-    document.getElementById('loadMoreBtn').textContent = 'Show More (' + (cards.length - visibleCount) + ' remaining)';
-  }
-}
+        extra_js = f"""<script>
+const BATCH = 60;
+const MIN_DISCOUNT_CFG = {min_discount};
+const TOTAL_ALL = {total};
+let catalogOffset = 0;
+let catalogLoading = false;
+let serverTotal = TOTAL_ALL;  // Обновляется из API (с учётом фильтров)
+let filterTimer = null;
 
-function toggleFilter() {
+function escHtml(s) {{
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}}
+
+function getFilters() {{
+  return {{
+    minD: parseFloat(document.getElementById('filterDiscount').value) || 0,
+    minV: parseInt(document.getElementById('filterVolume').value) || 0,
+    minP: parseFloat(document.getElementById('filterMinPrice').value) || 0,
+    maxP: parseFloat(document.getElementById('filterPrice').value) || 0,
+  }};
+}}
+
+function hasActiveFilters() {{
+  const f = getFilters();
+  return f.minD > 0 || f.minV > 0 || f.minP > 0 || (f.maxP > 0 && f.maxP < 999);
+}}
+
+function makeCard(it) {{
+  const priceStr = it.price != null ? '$' + it.price.toFixed(2) : '—';
+  const steamStr = it.steam != null ? '$' + it.steam.toFixed(2) : '—';
+  let badge = '';
+  if (it.discount >= MIN_DISCOUNT_CFG) {{
+    badge = '<span class="badge badge-success">' + it.discount.toFixed(1) + '%</span>';
+  }} else if (it.discount > 0) {{
+    badge = '<span class="badge badge-info">' + it.discount.toFixed(1) + '%</span>';
+  }}
+  const imgHtml = it.image_url
+    ? '<img src="' + escHtml(it.image_url) + '" alt="" loading="lazy" style="max-width:100%;max-height:100%;object-fit:contain">'
+    : '<i data-lucide="package" style="width:48px;height:48px;color:var(--text-muted)"></i>';
+  const buyBg = it.discount >= MIN_DISCOUNT_CFG ? 'background:var(--success)' : 'background:var(--accent)';
+  const steamUrl = 'https://steamcommunity.com/market/listings/' + (it.app_id || 570) + '/' + encodeURIComponent(it.name);
+
+  const div = document.createElement('div');
+  div.className = 'item-card';
+  div.innerHTML = '<div class="item-img">' + imgHtml + '</div>'
+    + '<div class="item-name" title="' + escHtml(it.name) + '">' + escHtml(it.name) + '</div>'
+    + '<div class="item-rarity">Vol: ' + it.volume + ' ' + badge + '</div>'
+    + '<div class="item-prices" style="display:flex;justify-content:space-between;align-items:center;padding:4px 10px 0;font-size:12px;color:var(--text-muted)">'
+    + '<span>CS2DT: <strong style="color:var(--text)">' + priceStr + '</strong></span>'
+    + '<span>Steam: <strong style="color:var(--accent)">' + steamStr + '</strong></span>'
+    + '</div>'
+    + '<div class="item-footer">'
+    + '<a href="' + steamUrl + '" target="_blank" rel="noopener" title="Open on Steam Market" class="steam-icon-link">'
+    + '<svg width="18" height="18" viewBox="0 0 256 259" fill="#c6d4df" xmlns="http://www.w3.org/2000/svg">'
+    + '<path d="M127.8 0C60.2 0 5.2 52 .5 118.6l68.6 28.3c5.8-4 12.9-6.3 20.5-6.3l.3 0 2-.1 30.6-44.3v-.6c0-26.3 21.4-47.6 47.6-47.6s47.6 21.4 47.6 47.6-21.4 47.6-47.6 47.6h-1.1l-43.6 31.1c0 .5 0 1.1 0 1.6 0 19.7-16 35.7-35.7 35.7-17.6 0-32.2-12.7-35.2-29.4L4.1 160C20.8 214.4 71.1 253.5 130.6 253.5c71.5 0 129.4-57.9 129.4-129.4C260 52.7 199.2 0 127.8 0zM80.3 196.3l-15.6-6.4c2.8 5.7 7.4 10.6 13.4 13.6 13 6.5 28.9 1 35.4-12.1 3.1-6.3 3.4-13.3.7-19.7-2.7-6.4-7.7-11.3-14.1-14.5-6.2-3.1-13-3.5-19.2-1.5l16.1 6.7c9.6 4 14.2 15 10.2 24.6-4 9.6-15 14.2-24.6 10.2l-.3-.2zm110.6-96.6c0-17.5-14.2-31.7-31.7-31.7s-31.7 14.2-31.7 31.7 14.2 31.7 31.7 31.7 31.7-14.2 31.7-31.7zm-55.6.1c0-13.2 10.7-24 24-24s24 10.7 24 24-10.7 24-24 24-24-10.7-24-24z"/>'
+    + '</svg></a>'
+    + '<span class="btn-buy" style="' + buyBg + '">Buy</span></div>';
+  return div;
+}}
+
+function buildUrl() {{
+  const f = getFilters();
+  let url = '/api/v1/items/catalog?offset=' + catalogOffset + '&limit=' + BATCH;
+  if (f.minD > 0) url += '&min_discount=' + f.minD;
+  if (f.minV > 0) url += '&min_volume=' + f.minV;
+  if (f.minP > 0) url += '&min_price=' + f.minP;
+  if (f.maxP > 0 && f.maxP < 999) url += '&max_price=' + f.maxP;
+  return url;
+}}
+
+async function loadMore() {{
+  if (catalogLoading) return;
+  catalogLoading = true;
+  const btn = document.getElementById('loadMoreBtn');
+  btn.textContent = 'Loading...';
+  btn.disabled = true;
+
+  try {{
+    const resp = await fetch(buildUrl());
+    const data = await resp.json();
+    const grid = document.getElementById('itemsGrid');
+
+    // Убрать сообщение Loading при первой загрузке
+    const loadingMsg = document.getElementById('loadingMsg');
+    if (loadingMsg) loadingMsg.remove();
+
+    const items = data.items || [];
+    items.forEach(it => {{
+      grid.appendChild(makeCard(it));
+    }});
+
+    catalogOffset += items.length;
+    serverTotal = data.total || 0;
+
+    document.getElementById('loadedCount').textContent = catalogOffset;
+
+    // Показать инфо о фильтрации
+    const fInfo = document.getElementById('filteredInfo');
+    const mCount = document.getElementById('matchedCount');
+    if (hasActiveFilters()) {{
+      fInfo.style.display = '';
+      mCount.textContent = serverTotal;
+    }} else {{
+      fInfo.style.display = 'none';
+    }}
+
+    // Переинициализировать иконки Lucide для новых карточек
+    if (typeof lucide !== 'undefined') lucide.createIcons();
+
+    const remaining = serverTotal - catalogOffset;
+    if (remaining <= 0 || items.length < BATCH) {{
+      btn.style.display = 'none';
+    }} else {{
+      btn.style.display = '';
+      btn.textContent = 'Show More (' + remaining + ' remaining)';
+      btn.disabled = false;
+    }}
+  }} catch (e) {{
+    console.error('Ошибка загрузки:', e);
+    btn.textContent = 'Error — retry';
+    btn.disabled = false;
+  }}
+  catalogLoading = false;
+}}
+
+function toggleFilter() {{
   document.getElementById('filterPanel').classList.toggle('open');
-}
+}}
 
-function applyFilters() {
-  const minD = parseFloat(document.getElementById('filterDiscount').value);
-  const minV = parseFloat(document.getElementById('filterVolume').value);
-  const maxP = parseFloat(document.getElementById('filterPrice').value);
+function onFilterKeyup(e) {{
+  // Применить фильтр по Enter или с задержкой 600мс
+  if (e.key === 'Enter') {{
+    if (filterTimer) clearTimeout(filterTimer);
+    onFilterChange();
+  }} else {{
+    if (filterTimer) clearTimeout(filterTimer);
+    filterTimer = setTimeout(onFilterChange, 600);
+  }}
+}}
 
-  document.getElementById('discountVal').textContent = minD + '%';
-  document.getElementById('volumeVal').textContent = minV;
-  document.getElementById('priceVal').textContent = '$' + maxP;
+function onFilterChange() {{
+  // Сброс и перезагрузка с новыми фильтрами
+  catalogOffset = 0;
+  const grid = document.getElementById('itemsGrid');
+  grid.innerHTML = '<div class="empty" style="grid-column:1/-1" id="loadingMsg"><p>Loading...</p></div>';
+  loadMore();
+}}
 
-  document.querySelectorAll('.item-card').forEach(card => {
-    const d = parseFloat(card.dataset.discount) || 0;
-    const v = parseFloat(card.dataset.volume) || 0;
-    const p = parseFloat(card.dataset.price) || 0;
-    const show = d >= minD && v >= minV && p <= maxP;
-    card.style.display = show ? '' : 'none';
-  });
-}
+function resetFilters() {{
+  document.getElementById('filterDiscount').value = 0;
+  document.getElementById('filterVolume').value = 0;
+  document.getElementById('filterMinPrice').value = 0;
+  document.getElementById('filterPrice').value = 0;
+  onFilterChange();
+}}
+
+// Загрузить первый батч при открытии страницы
+loadMore();
 </script>"""
 
         return _layout("Catalog", "/items", content) + extra_js
@@ -1789,26 +1995,35 @@ function applyFilters() {
                             discount = f"{d_val:.1f}%"
                             profit = f"${profit_val:.4f}"
                         profit_color = "var(--success)" if profit_val > 0 else "var(--danger)"
+                        img_tag = (
+                            f'<img src="{_esc(item.image_url)}" alt="" '
+                            f'style="width:32px;height:32px;object-fit:contain;vertical-align:middle;margin-right:6px">'
+                            if item.image_url else ""
+                        )
+                        from urllib.parse import quote as _quote
+                        steam_link = f"https://steamcommunity.com/market/listings/570/{_quote(name)}"
                         row = (
                             f'<tr data-discount="{d_val:.4f}" '
                             f'data-profit="{profit_val:.6f}" '
                             f'data-volume="{vol}">'
-                            f"<td>{name}</td>"
+                            f'<td style="white-space:nowrap">{img_tag}{_esc(name)}</td>'
                             f"<td>${p:.4f}</td>"
                             f"<td>${sp:.4f}</td>"
                             f'<td><span style="color:var(--success);font-weight:600">{discount}</span></td>'
                             f'<td><span style="color:{profit_color}">{profit}</span></td>'
                             f"<td>{vol or '—'}</td>"
+                            f'<td><a href="{steam_link}" target="_blank" '
+                            f'style="color:var(--accent);font-size:12px">Steam</a></td>'
                             f"</tr>"
                         )
                         candidate_rows.append((d_val, row))
                     candidate_rows.sort(key=lambda x: x[0], reverse=True)
                     rows_html = "".join(r for _, r in candidate_rows)
         except Exception as e:
-            rows_html = f"<tr><td colspan='6'>Error: {e}</td></tr>"
+            rows_html = f"<tr><td colspan='7'>Error: {_esc(e)}</td></tr>"
 
         if not rows_html:
-            rows_html = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:32px">No candidates yet. Run Scanner + Updater.</td></tr>'
+            rows_html = '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:32px">No candidates yet. Run Scanner + Updater.</td></tr>'
 
         content = f"""
 <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:8px">
@@ -1828,6 +2043,7 @@ function applyFilters() {
   <th class="sortable sort-desc" data-key="discount">Discount</th>
   <th class="sortable" data-key="profit">Profit</th>
   <th class="sortable" data-key="volume">Vol 24h</th>
+  <th>Link</th>
 </tr></thead>
 <tbody>{rows_html}</tbody>
 </table>
@@ -1878,7 +2094,7 @@ document.querySelectorAll('th.sortable').forEach(th => {
             from fluxio.db.session import async_session_factory
             from fluxio.db.unit_of_work import UnitOfWork
             async with UnitOfWork(async_session_factory) as uow:
-                purchases = await uow.purchases.get_all(limit=100)
+                purchases = await uow.purchases.get_all(limit=100_000)
                 items = []
                 for p in purchases:
                     items.append({
@@ -1908,7 +2124,7 @@ document.querySelectorAll('th.sortable').forEach(th => {
             from fluxio.db.session import async_session_factory
             from fluxio.db.unit_of_work import UnitOfWork
             async with UnitOfWork(async_session_factory) as uow:
-                result = await uow._session.execute(delete(Purchase))
+                result = await uow.session.execute(delete(Purchase))
                 count = result.rowcount
                 await uow.commit()
             logger.info(f"Все покупки удалены из БД ({count} шт.)")
@@ -1927,6 +2143,7 @@ document.querySelectorAll('th.sortable').forEach(th => {
         live_count = 0
         filtered_count = 0
         total_median_profit = 0.0
+        rows: list[str] = []
         # Данные для графиков
         by_day: dict[str, dict] = {}   # "2026-03-15" -> {count, spent, profit}
         by_hour: dict[int, dict] = {}  # 0..23 -> {count, spent, profit}
@@ -1950,6 +2167,12 @@ document.querySelectorAll('th.sortable').forEach(th => {
                         items_cache[p.market_hash_name] = await uow.items.get_by_name(
                             p.market_hash_name,
                         )
+
+                # Кэш картинок: market_hash_name → image_url
+                img_cache: dict[str, str] = {}
+                for name, obj in items_cache.items():
+                    if obj and getattr(obj, "image_url", None):
+                        img_cache[name] = obj.image_url
 
                 for p in all_purchases:
                     price = float(p.price_usd) if p.price_usd else 0
@@ -1987,9 +2210,10 @@ document.querySelectorAll('th.sortable').forEach(th => {
                             by_hour[hour_key]["spent"] += price
                             by_hour[hour_key]["profit"] += p_profit
 
-                purchases = all_purchases[:200]
+                PURCHASES_PAGE_SIZE = 50
                 rows = []
-                for p in purchases:
+                row_idx = 0
+                for p in all_purchases:
                     price = float(p.price_usd) if p.price_usd else 0
                     steam = float(p.steam_price_usd) if p.steam_price_usd else 0
                     disc = f"{float(p.discount_percent):.1f}%" if p.discount_percent else "—"
@@ -2041,17 +2265,26 @@ document.querySelectorAll('th.sortable').forEach(th => {
                         filter_note = (
                             f'<div style="font-size:10px;color:var(--danger);'
                             f'max-width:250px;overflow:hidden;text-overflow:ellipsis;'
-                            f'white-space:nowrap" title="{p.notes}">{p.notes}</div>'
+                            f'white-space:nowrap" title="{_esc(p.notes)}">{_esc(p.notes)}</div>'
                         )
 
                     steam_url = f"https://steamcommunity.com/market/listings/570/{quote(p.market_hash_name)}"
+                    p_img = img_cache.get(p.market_hash_name, "")
+                    p_img_tag = (
+                        f'<img src="{_esc(p_img)}" alt="" '
+                        f'style="width:28px;height:28px;object-fit:contain;vertical-align:middle;'
+                        f'margin-right:8px;border-radius:4px">'
+                        if p_img else ""
+                    )
 
+                    hidden_row = ' style="display:none"' if row_idx >= PURCHASES_PAGE_SIZE else ""
                     rows.append(
-                        f'<tr data-profit="{profit:.6f}" data-volume="{vol}" '
+                        f'<tr class="p-row" data-profit="{profit:.6f}" data-volume="{vol}" '
                         f'data-median-profit="{median_profit:.6f}" data-ratio="{ratio:.4f}"'
-                        f'{row_style}>'
-                        f'<td><a href="{steam_url}" target="_blank" '
-                        f'style="color:var(--accent)">{p.market_hash_name}</a>'
+                        f'{row_style}{hidden_row}>'
+                        f'<td style="white-space:nowrap;color:var(--text-muted);font-size:12px">{ts}</td>'
+                        f'<td style="white-space:nowrap">{p_img_tag}'
+                        f'{_esc(p.market_hash_name)}'
                         f'{filter_note}</td>'
                         f"<td>${price:.4f}</td>"
                         f"<td>${steam:.4f}</td>"
@@ -2061,17 +2294,19 @@ document.querySelectorAll('th.sortable').forEach(th => {
                         f"<td>{profit_str}</td>"
                         f"<td>{median_profit_str}</td>"
                         f"<td>{vol or '—'}</td>"
-                        f'<td><span class="badge {status_badge}">{p.status}</span>{dry_badge}</td>'
-                        f"<td>{ts}</td>"
+                        f'<td><span class="badge {status_badge}">{_esc(p.status)}</span>{dry_badge}</td>'
+                        f'<td><a href="{steam_url}" target="_blank" '
+                        f'style="color:var(--accent);font-size:12px">Steam</a></td>'
                         f"</tr>"
                     )
+                    row_idx += 1
                 rows_html = "".join(rows)
         except Exception as e:
             logger.exception("Dashboard: ошибка на странице покупок")
-            rows_html = f"<tr><td colspan='11'>Error: {e}</td></tr>"
+            rows_html = f"<tr><td colspan='12'>Error: {_esc(e)}</td></tr>"
 
         if not rows_html:
-            rows_html = '<tr><td colspan="11" style="text-align:center;color:var(--text-muted);padding:32px">No purchases yet.</td></tr>'
+            rows_html = '<tr><td colspan="12" style="text-align:center;color:var(--text-muted);padding:32px">No purchases yet.</td></tr>'
 
         # Сериализация данных для графиков
         import json as _json
@@ -2128,7 +2363,7 @@ document.querySelectorAll('th.sortable').forEach(th => {
 </div>
 
 <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-  <span style="color:var(--text-muted)">Showing: {min(total, 200)} of {total}</span>
+  <span style="color:var(--text-muted)">Total: {total}</span>
   <button class="btn btn-danger" onclick="clearPurchases()">
     <i data-lucide="trash-2" style="width:14px;height:14px"></i> Clear All
   </button>
@@ -2137,20 +2372,42 @@ document.querySelectorAll('th.sortable').forEach(th => {
 <div class="table-wrap" style="max-height:70vh;overflow:auto"><div class="table-scroll">
 <table id="purchases-table">
 <thead style="position:sticky;top:0;z-index:1"><tr>
-  <th>Item</th><th>Price</th><th>Steam</th>
+  <th>Date</th><th>Item</th><th>Price</th><th>Steam</th>
   <th>Median 30d</th>
   <th class="sortable" data-key="ratio">Ratio</th>
   <th>Discount</th>
   <th class="sortable" data-key="profit">Profit</th>
   <th class="sortable" data-key="median-profit">By Median</th>
   <th class="sortable" data-key="volume">Vol 24h</th>
-  <th>Status</th><th>Date</th>
+  <th>Status</th><th>Link</th>
 </tr></thead>
 <tbody>{rows_html}</tbody>
 </table>
-</div></div>"""
+</div></div>
+<div style="text-align:center;margin-top:16px" id="pLoadMoreWrap">
+  <button class="btn btn-ghost" id="pLoadMoreBtn" onclick="showMorePurchases()" {('style="display:none"' if len(rows) <= 50 else '')}>
+    Show More ({max(len(rows) - 50, 0)} remaining)
+  </button>
+</div>"""
 
         extra_js = """<script>
+let pVisibleCount = 50;
+function showMorePurchases() {
+  const rows = document.querySelectorAll('#purchases-table tbody tr.p-row');
+  const newLimit = pVisibleCount + 50;
+  rows.forEach((row, i) => {
+    if (i < newLimit && !row.style.opacity) row.style.display = '';
+    else if (i < newLimit) row.style.display = '';
+  });
+  pVisibleCount = newLimit;
+  const btn = document.getElementById('pLoadMoreBtn');
+  if (pVisibleCount >= rows.length) {
+    btn.style.display = 'none';
+  } else {
+    btn.textContent = 'Show More (' + (rows.length - pVisibleCount) + ' remaining)';
+  }
+}
+
 async function clearPurchases() {
   if (!confirm('Delete ALL purchases from database? This cannot be undone.')) return;
   const resp = await fetch('/api/v1/purchases/clear', {method: 'POST'});

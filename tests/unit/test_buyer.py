@@ -68,6 +68,7 @@ def _make_uow(item=None) -> AsyncMock:
     uow.purchases.save_active_order = AsyncMock()
     uow.commit = AsyncMock()
     uow._session = AsyncMock()
+    uow.session = uow._session
     return uow
 
 

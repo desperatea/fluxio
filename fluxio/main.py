@@ -46,6 +46,7 @@ class Bot:
 
     def __init__(self) -> None:
         self._running: bool = False
+        self._shutdown_done: bool = False
         self._container: ServiceContainer | None = None
         self._workers: list[BaseWorker] = []
 
@@ -183,7 +184,11 @@ class Bot:
             await self.shutdown()
 
     async def shutdown(self) -> None:
-        """Корректное завершение работы бота."""
+        """Корректное завершение работы бота (идемпотентный)."""
+        if self._shutdown_done:
+            return
+        self._shutdown_done = True
+
         logger.info("Завершение работы бота...")
         self._running = False
 

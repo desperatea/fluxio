@@ -146,6 +146,7 @@ class EnricherWorker(BaseWorker):
         item_nameid = await self._ensure_item_nameid(hash_name, app_id)
 
         # Обновляем Item в БД
+        sales_at_price_val: int | None = None
         async with UnitOfWork(async_session_factory) as uow:
             item = await uow.items.get_by_name(hash_name)
             if item is not None:
@@ -163,6 +164,7 @@ class EnricherWorker(BaseWorker):
                     item.sales_at_current_price = self._calc_sales_at_price(
                         history, current_price,
                     )
+                sales_at_price_val = item.sales_at_current_price
 
                 await uow.commit()
 
@@ -171,7 +173,7 @@ class EnricherWorker(BaseWorker):
             f"медиана 30д=${price_data.median_price_usd:.4f}, "
             f"объём 7д={volume_7d}, "
             f"CV={price_cv:.3f}, spike={spike_ratio:.2f}, "
-            f"sales@price={item.sales_at_current_price if item else '?'}, "
+            f"sales@price={sales_at_price_val if sales_at_price_val is not None else '?'}, "
             f"nameid={item_nameid or '?'}"
         )
 
@@ -228,7 +230,7 @@ class EnricherWorker(BaseWorker):
                     "volume": stmt.excluded.volume,
                 },
             )
-            await uow._session.execute(stmt)
+            await uow.session.execute(stmt)
             await uow.commit()
 
         logger.debug(

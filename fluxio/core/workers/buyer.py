@@ -264,16 +264,23 @@ class BuyerWorker(BaseWorker):
                 # Safety checks
                 safety_result = await run_all_checks(
                     cs2dt_client=self._cs2dt,
-                    session=uow._session,
+                    session=uow.session,
                     product_id=product_id,
                     market_hash_name=hash_name,
                     price_usd=listing_price,
                 )
                 if not safety_result:
-                    logger.info(
-                        f"Buyer: [{hash_name}] safety check не пройден: {safety_result.reason}"
-                    )
-                    break  # баланс/лимит исчерпан — стоп
+                    if safety_result.fatal:
+                        logger.warning(
+                            f"Buyer: [{hash_name}] фатальная проверка не пройдена: "
+                            f"{safety_result.reason}"
+                        )
+                        break  # баланс/лимит исчерпан — стоп всех покупок
+                    else:
+                        logger.debug(
+                            f"Buyer: [{hash_name}] пропуск листинга: {safety_result.reason}"
+                        )
+                        continue  # пропускаем этот листинг, пробуем следующий
 
                 # === ПОКУПКА ===
                 if config.trading.dry_run:
