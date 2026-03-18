@@ -81,10 +81,16 @@ class EnricherWorker(BaseWorker):
 
         results = await asyncio.gather(*[_safe_enrich(n) for n in names])
         ok_count = sum(1 for r in results if r)
+        fail_count = len(names) - ok_count
         self._status.items_processed += ok_count
 
         if len(names) > 1:
-            logger.info(f"Enricher: батч {ok_count}/{len(names)} обогащён")
+            queue_remain = await redis.scard(KEY_ENRICH_QUEUE)
+            logger.info(
+                f"Enricher: батч {ok_count}/{len(names)} обогащён"
+                f"{f', {fail_count} ошибок' if fail_count else ''}"
+                f" | очередь: {queue_remain}"
+            )
 
     async def _enrich_item(self, hash_name: str) -> None:
         """Обогатить один предмет данными pricehistory.
@@ -100,15 +106,16 @@ class EnricherWorker(BaseWorker):
         async with UnitOfWork(async_session_factory) as uow:
             item = await uow.items.get_by_name(hash_name)
             if item is None:
-                logger.debug(f"Enricher: предмет [{hash_name}] не найден в БД")
+                logger.warning(f"Enricher: пропуск [{hash_name}] — не найден в БД")
                 return
 
             if item.enriched_at is not None:
                 age = datetime.now(timezone.utc) - item.enriched_at
                 if age < timedelta(days=freshness_days):
-                    logger.debug(
-                        f"Enricher: [{hash_name}] уже обогащён "
-                        f"({age.days}д назад < {freshness_days}д), пропуск"
+                    hours_ago = int(age.total_seconds() / 3600)
+                    logger.info(
+                        f"Enricher: пропуск [{hash_name}] — "
+                        f"обогащён {hours_ago}ч назад (лимит {freshness_days * 24}ч)"
                     )
                     return
 
@@ -118,15 +125,18 @@ class EnricherWorker(BaseWorker):
 
         if history is None:
             logger.warning(
-                f"Enricher: не удалось получить pricehistory [{hash_name}] "
-                "(куки протухли?)"
+                f"Enricher: FAIL [{hash_name}] — "
+                "Steam вернул None (HTTP 500 / куки протухли?)"
             )
             return
 
         # Вычисляем 30-дневную медиану
         price_data = self._steam._calc_from_history(history, days=30)
         if price_data is None:
-            logger.debug(f"Enricher: нет данных за 30 дней для [{hash_name}]")
+            logger.info(
+                f"Enricher: пропуск [{hash_name}] — "
+                f"нет продаж за 30 дней (history entries: {len(history)})"
+            )
             return
 
         # Вычисляем 7-дневный объём продаж
