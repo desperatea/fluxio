@@ -2195,7 +2195,7 @@ document.querySelectorAll('th.sortable').forEach(th => {
             async with UnitOfWork(async_session_factory) as uow:
                 all_purchases = await uow.purchases.get_all(limit=100_000)
                 total = len(all_purchases)
-                fee = config.fees.steam_fee_percent / 100
+                from fluxio.config import FeesConfig
 
                 items_cache: dict[str, object] = {}
                 for p in all_purchases:
@@ -2220,12 +2220,12 @@ document.querySelectorAll('th.sortable').forEach(th => {
                         total_spent += price
                         p_profit = 0.0
                         if steam > 0 and price > 0:
-                            p_profit = steam * (1 - fee) - price
+                            p_profit = FeesConfig.calc_net_steam(steam) - price
                             total_profit += p_profit
                         item_obj = items_cache.get(p.market_hash_name)
                         median = float(item_obj.steam_median_30d) if item_obj and item_obj.steam_median_30d else 0
                         if median > 0 and price > 0:
-                            total_median_profit += median * (1 - fee) - price
+                            total_median_profit += FeesConfig.calc_net_steam(median) - price
                         if p.dry_run:
                             dry_count += 1
                         else:
@@ -2246,9 +2246,7 @@ document.querySelectorAll('th.sortable').forEach(th => {
                             by_hour[hour_key]["spent"] += price
                             by_hour[hour_key]["profit"] += p_profit
 
-                PURCHASES_PAGE_SIZE = 50
                 rows = []
-                row_idx = 0
                 for p in all_purchases:
                     price = float(p.price_usd) if p.price_usd else 0
                     steam = float(p.steam_price_usd) if p.steam_price_usd else 0
@@ -2272,7 +2270,7 @@ document.querySelectorAll('th.sortable').forEach(th => {
                     profit = 0.0
                     profit_str = "—"
                     if steam > 0 and price > 0:
-                        net_steam = steam * (1 - fee)
+                        net_steam = FeesConfig.calc_net_steam(steam)
                         profit = net_steam - price
                         color_p = "var(--success)" if profit > 0 else "var(--danger)"
                         profit_str = f'<span style="color:{color_p}">${profit:.4f}</span>'
@@ -2280,7 +2278,7 @@ document.querySelectorAll('th.sortable').forEach(th => {
                     median_profit = 0.0
                     median_profit_str = "—"
                     if median > 0 and price > 0:
-                        net_median = median * (1 - fee)
+                        net_median = FeesConfig.calc_net_steam(median)
                         median_profit = net_median - price
                         mp_color = "var(--success)" if median_profit > 0 else "var(--danger)"
                         median_profit_str = f'<span style="color:{mp_color}">${median_profit:.4f}</span>'
@@ -2313,7 +2311,6 @@ document.querySelectorAll('th.sortable').forEach(th => {
                         if p_img else ""
                     )
 
-                    hidden_row = ' style="display:none"' if row_idx >= PURCHASES_PAGE_SIZE else ""
                     # Кнопка ручной покупки — только для dry_run с успешным статусом
                     buy_btn = ""
                     if p.dry_run and p.status in ("success", "pending"):
@@ -2328,8 +2325,9 @@ document.querySelectorAll('th.sortable').forEach(th => {
                     rows.append(
                         f'<tr class="p-row" data-profit="{profit:.6f}" data-volume="{vol}" '
                         f'data-discount="{float(p.discount_percent) if p.discount_percent else 0:.4f}" '
-                        f'data-median-profit="{median_profit:.6f}" data-ratio="{ratio:.4f}"'
-                        f'{row_style}{hidden_row}>'
+                        f'data-median-profit="{median_profit:.6f}" data-ratio="{ratio:.4f}" '
+                        f'data-status="{_esc(p.status)}"'
+                        f'{row_style}>'
                         f'<td style="white-space:nowrap;color:var(--text-muted);font-size:12px">{ts}</td>'
                         f'<td style="white-space:nowrap">{p_img_tag}'
                         f'<a href="{steam_url}" target="_blank" style="color:var(--text)">'
@@ -2347,7 +2345,6 @@ document.querySelectorAll('th.sortable').forEach(th => {
                         f'<td><span class="badge {status_badge}">{_esc(p.status)}</span>{dry_badge}</td>'
                         f"</tr>"
                     )
-                    row_idx += 1
                 rows_html = "".join(rows)
         except Exception as e:
             logger.exception("Dashboard: ошибка на странице покупок")
@@ -2410,10 +2407,30 @@ document.querySelectorAll('th.sortable').forEach(th => {
   </div>
 </div>
 
-<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-  <span style="color:var(--text-muted)">Total: {total}</span>
-  <button class="btn btn-danger" onclick="clearPurchases()">
-    <i data-lucide="trash-2" style="width:14px;height:14px"></i> Clear All
+<!-- Фильтры -->
+<div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;flex-wrap:wrap;
+  padding:12px 16px;background:var(--bg-elevated);border-radius:var(--radius-sm);border:1px solid var(--border)">
+  <label style="display:flex;align-items:center;gap:6px;color:var(--text-secondary);font-size:13px;cursor:pointer">
+    <input type="checkbox" id="fHideFiltered" checked onchange="applyFilters()"
+      style="accent-color:var(--accent)"> Скрыть filtered
+  </label>
+  <label style="display:flex;align-items:center;gap:6px;color:var(--text-secondary);font-size:13px">
+    Min ROI %
+    <input type="number" id="fMinRoi" value="0" step="5" style="width:64px;padding:4px 8px;
+      background:var(--bg-surface);border:1px solid var(--border);border-radius:var(--radius-xs);
+      color:var(--text);font-size:13px" onchange="applyFilters()">
+  </label>
+  <label style="display:flex;align-items:center;gap:6px;color:var(--text-secondary);font-size:13px">
+    Min Vol
+    <input type="number" id="fMinVol" value="0" step="10" style="width:64px;padding:4px 8px;
+      background:var(--bg-surface);border:1px solid var(--border);border-radius:var(--radius-xs);
+      color:var(--text);font-size:13px" onchange="applyFilters()">
+  </label>
+  <span style="color:var(--text-muted);font-size:12px;margin-left:auto" id="filterCounter">
+    Total: {total}
+  </span>
+  <button class="btn btn-danger" style="padding:6px 12px;font-size:12px" onclick="clearPurchases()">
+    <i data-lucide="trash-2" style="width:13px;height:13px"></i> Clear All
   </button>
 </div>
 
@@ -2423,7 +2440,7 @@ document.querySelectorAll('th.sortable').forEach(th => {
   <th>Date</th><th>Item</th><th></th><th>Price</th><th>Steam</th>
   <th>Median 30d</th>
   <th class="sortable" data-key="ratio">Ratio</th>
-  <th class="sortable" data-key="discount">Discount</th>
+  <th class="sortable" data-key="discount">ROI</th>
   <th class="sortable" data-key="profit">Profit</th>
   <th class="sortable" data-key="median-profit">By Median</th>
   <th class="sortable" data-key="volume">Vol 24h</th>
@@ -2431,30 +2448,44 @@ document.querySelectorAll('th.sortable').forEach(th => {
 </tr></thead>
 <tbody>{rows_html}</tbody>
 </table>
-</div></div>
-<div style="text-align:center;margin-top:16px" id="pLoadMoreWrap">
-  <button class="btn btn-ghost" id="pLoadMoreBtn" onclick="showMorePurchases()" {('style="display:none"' if len(rows) <= 50 else '')}>
-    Show More ({max(len(rows) - 50, 0)} remaining)
-  </button>
-</div>"""
+</div></div>"""
 
         extra_js = """<script>
-let pVisibleCount = 50;
-function showMorePurchases() {
-  const rows = document.querySelectorAll('#purchases-table tbody tr.p-row');
-  const newLimit = pVisibleCount + 50;
-  rows.forEach((row, i) => {
-    if (i < newLimit && !row.style.opacity) row.style.display = '';
-    else if (i < newLimit) row.style.display = '';
-  });
-  pVisibleCount = newLimit;
-  const btn = document.getElementById('pLoadMoreBtn');
-  if (pVisibleCount >= rows.length) {
-    btn.style.display = 'none';
-  } else {
-    btn.textContent = 'Show More (' + (rows.length - pVisibleCount) + ' remaining)';
-  }
+function saveScrollAndReload() {
+  const wrap = document.querySelector('.table-wrap');
+  if (wrap) sessionStorage.setItem('purchasesScrollTop', wrap.scrollTop);
+  sessionStorage.setItem('purchasesPageScroll', window.scrollY);
+  location.reload();
 }
+document.addEventListener('DOMContentLoaded', () => {
+  const wrap = document.querySelector('.table-wrap');
+  const st = sessionStorage.getItem('purchasesScrollTop');
+  const ps = sessionStorage.getItem('purchasesPageScroll');
+  if (st !== null && wrap) { wrap.scrollTop = parseInt(st); sessionStorage.removeItem('purchasesScrollTop'); }
+  if (ps !== null) { window.scrollTo(0, parseInt(ps)); sessionStorage.removeItem('purchasesPageScroll'); }
+});
+
+function applyFilters() {
+  const hideFiltered = document.getElementById('fHideFiltered').checked;
+  const minRoi = parseFloat(document.getElementById('fMinRoi').value) || 0;
+  const minVol = parseInt(document.getElementById('fMinVol').value) || 0;
+  const rows = document.querySelectorAll('#purchases-table tbody tr.p-row');
+  let shown = 0;
+  rows.forEach(row => {
+    const status = row.dataset.status || '';
+    const discount = parseFloat(row.dataset.discount) || 0;
+    const vol = parseInt(row.dataset.volume) || 0;
+    let hide = false;
+    if (hideFiltered && status === 'filtered') hide = true;
+    if (discount < minRoi) hide = true;
+    if (vol < minVol) hide = true;
+    row.style.display = hide ? 'none' : '';
+    if (!hide) shown++;
+  });
+  document.getElementById('filterCounter').textContent = shown + ' / ' + rows.length;
+}
+// Применить фильтры при загрузке (скрыть filtered по умолчанию)
+document.addEventListener('DOMContentLoaded', applyFilters);
 
 async function clearPurchases() {
   if (!confirm('Delete ALL purchases from database? This cannot be undone.')) return;
@@ -2655,42 +2686,74 @@ new Chart(document.getElementById('chartByHour'), {
 // ── Manual Buy ──
 let buyInProgress = false;
 
+function escHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function modalLoading() {
+  return '<div class="modal-state"><div class="modal-spinner"></div><div class="modal-state-text">Загрузка...</div></div>';
+}
+
+function modalError(msg, closeFn) {
+  closeFn = closeFn || 'closeBuyModal()';
+  return '<div class="modal-state">'
+    + '<div class="modal-icon modal-icon-error">!</div>'
+    + '<div class="modal-state-title">Ошибка</div>'
+    + '<div class="modal-state-text">' + escHtml(msg) + '</div>'
+    + '<button class="modal-btn modal-btn-secondary" onclick="' + closeFn + '">Закрыть</button>'
+    + '</div>';
+}
+
 async function openBuyDialog(btn) {
   if (buyInProgress) return;
   const name = btn.dataset.name;
   const modal = document.getElementById('buyModal');
   const body = document.getElementById('buyModalBody');
-  modal.style.display = 'flex';
-  body.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted)"><div class="spinner"></div><br>Загрузка данных...</div>';
+  modal.classList.add('active');
+  body.innerHTML = modalLoading();
 
   try {
     const resp = await fetch('/api/v1/manual-buy/preflight?market_hash_name=' + encodeURIComponent(name));
     const data = await resp.json();
     if (!data.available) {
-      body.innerHTML = '<div style="text-align:center;padding:24px"><div style="color:var(--danger);font-size:18px;margin-bottom:12px">Недоступно</div><div style="color:var(--text-muted)">' + escHtml(data.error || 'Неизвестная ошибка') + '</div><br><button class="btn btn-ghost" onclick="closeBuyModal()">Закрыть</button></div>';
+      body.innerHTML = modalError(data.error || 'Предмет недоступен');
       return;
     }
     const profitColor = data.expected_profit_usd >= 0 ? 'var(--success)' : 'var(--danger)';
-    const imgTag = data.image_url ? '<img src="' + escHtml(data.image_url) + '" style="width:64px;height:64px;object-fit:contain;border-radius:8px;margin-bottom:8px" referrerpolicy="no-referrer">' : '';
+    const imgTag = data.image_url
+      ? '<img src="' + escHtml(data.image_url) + '" class="modal-item-img" referrerpolicy="no-referrer">' : '';
     const steamUrl = 'https://steamcommunity.com/market/listings/570/' + encodeURIComponent(data.market_hash_name);
-    body.innerHTML = '<div style="text-align:center;margin-bottom:16px">' + imgTag + '<a href="' + steamUrl + '" target="_blank" style="font-size:16px;font-weight:600;color:var(--accent);text-decoration:none">' + escHtml(data.market_hash_name) + ' <span style="font-size:12px;opacity:0.6">↗</span></a></div>'
-      + '<table style="width:100%;margin-bottom:20px;font-size:14px">'
-      + '<tr><td style="color:var(--text-muted);padding:6px 0">Цена CS2DT</td><td style="text-align:right;font-weight:600;color:var(--accent)">$' + data.cheapest_price_usd.toFixed(4) + '</td></tr>'
-      + '<tr><td style="color:var(--text-muted);padding:6px 0">Цена Steam</td><td style="text-align:right">$' + data.steam_price_usd.toFixed(4) + '</td></tr>'
-      + '<tr><td style="color:var(--text-muted);padding:6px 0">Net Steam</td><td style="text-align:right">$' + data.net_steam_usd.toFixed(4) + '</td></tr>'
-      + '<tr><td style="color:var(--text-muted);padding:6px 0">ROI</td><td style="text-align:right;color:' + profitColor + '">' + data.discount_percent.toFixed(1) + '%</td></tr>'
-      + '<tr><td style="color:var(--text-muted);padding:6px 0">Ожид. профит</td><td style="text-align:right;color:' + profitColor + '">$' + (data.expected_profit_usd || 0).toFixed(4) + '</td></tr>'
-      + '<tr style="border-top:1px solid var(--border)"><td style="color:var(--text-muted);padding:10px 0 6px">Баланс</td><td style="text-align:right;padding-top:10px">$' + data.balance_usd.toFixed(2) + '</td></tr>'
-      + '<tr><td style="color:var(--text-muted);padding:6px 0">После покупки</td><td style="text-align:right;font-weight:600">$' + data.balance_after_usd.toFixed(2) + '</td></tr>'
-      + '<tr><td style="color:var(--text-muted);padding:6px 0">Объём 24ч</td><td style="text-align:right">' + data.volume_24h + '</td></tr>'
-      + '<tr><td style="color:var(--text-muted);padding:6px 0">Лотов</td><td style="text-align:right">' + data.listings_count + '</td></tr>'
-      + '</table>'
-      + '<div style="display:flex;gap:12px;justify-content:center">'
-      + '<button class="btn btn-ghost" onclick="closeBuyModal()">Отмена</button>'
-      + '<button class="btn btn-buy-confirm" id="confirmBuyBtn" data-name="' + escHtml(data.market_hash_name) + '" data-price="' + data.cheapest_price_usd + '" onclick="confirmBuy(this.dataset.name, parseFloat(this.dataset.price))">Подтвердить покупку</button>'
+
+    body.innerHTML = ''
+      + '<div class="modal-header">'
+      +   imgTag
+      +   '<a href="' + steamUrl + '" target="_blank" class="modal-item-name">' + escHtml(data.market_hash_name) + ' <span class="modal-external">&#8599;</span></a>'
+      + '</div>'
+      + '<div class="modal-divider"></div>'
+      + '<div class="modal-grid">'
+      +   '<div class="modal-row"><span class="modal-label">Цена CS2DT</span><span class="modal-value" style="color:var(--accent);font-weight:700">$' + data.cheapest_price_usd.toFixed(4) + '</span></div>'
+      +   '<div class="modal-row"><span class="modal-label">Цена Steam</span><span class="modal-value">$' + data.steam_price_usd.toFixed(4) + '</span></div>'
+      +   '<div class="modal-row"><span class="modal-label">Net Steam</span><span class="modal-value">$' + data.net_steam_usd.toFixed(4) + '</span></div>'
+      + '</div>'
+      + '<div class="modal-highlight">'
+      +   '<div class="modal-highlight-item"><div class="modal-highlight-label">ROI</div><div class="modal-highlight-value" style="color:' + profitColor + '">' + data.discount_percent.toFixed(1) + '%</div></div>'
+      +   '<div class="modal-highlight-item"><div class="modal-highlight-label">Профит</div><div class="modal-highlight-value" style="color:' + profitColor + '">$' + (data.expected_profit_usd || 0).toFixed(4) + '</div></div>'
+      + '</div>'
+      + '<div class="modal-divider"></div>'
+      + '<div class="modal-grid">'
+      +   '<div class="modal-row"><span class="modal-label">Баланс</span><span class="modal-value">$' + data.balance_usd.toFixed(2) + '</span></div>'
+      +   '<div class="modal-row"><span class="modal-label">После покупки</span><span class="modal-value" style="font-weight:600">$' + data.balance_after_usd.toFixed(2) + '</span></div>'
+      +   '<div class="modal-row"><span class="modal-label">Объём 24ч</span><span class="modal-value">' + data.volume_24h + '</span></div>'
+      +   '<div class="modal-row"><span class="modal-label">Лотов</span><span class="modal-value">' + data.listings_count + '</span></div>'
+      + '</div>'
+      + '<div class="modal-actions">'
+      +   '<button class="modal-btn modal-btn-secondary" onclick="closeBuyModal()">Отмена</button>'
+      +   '<button class="modal-btn modal-btn-primary" id="confirmBuyBtn" data-name="' + escHtml(data.market_hash_name) + '" data-price="' + data.cheapest_price_usd + '" onclick="confirmBuy(this.dataset.name, parseFloat(this.dataset.price))">Купить</button>'
       + '</div>';
   } catch (e) {
-    body.innerHTML = '<div style="text-align:center;padding:24px;color:var(--danger)">Ошибка: ' + escHtml(e.message) + '<br><br><button class="btn btn-ghost" onclick="closeBuyModal()">Закрыть</button></div>';
+    body.innerHTML = modalError(e.message);
   }
 }
 
@@ -2698,7 +2761,7 @@ async function confirmBuy(name, maxPrice) {
   if (buyInProgress) return;
   buyInProgress = true;
   const btn = document.getElementById('confirmBuyBtn');
-  if (btn) { btn.disabled = true; btn.textContent = 'Покупка...'; }
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="modal-spinner modal-spinner-sm"></span> Покупка...'; }
 
   try {
     const resp = await fetch('/api/v1/manual-buy', {
@@ -2709,99 +2772,296 @@ async function confirmBuy(name, maxPrice) {
     const data = await resp.json();
     const body = document.getElementById('buyModalBody');
     if (data.ok) {
-      body.innerHTML = '<div style="text-align:center;padding:24px">'
-        + '<div style="color:var(--success);font-size:24px;margin-bottom:12px">&#10003; Куплено!</div>'
-        + '<div style="margin-bottom:8px"><strong>' + escHtml(name) + '</strong></div>'
-        + '<div style="color:var(--text-muted)">Цена: $' + data.buy_price.toFixed(4) + '</div>'
-        + '<div style="color:var(--text-muted)">Ордер: ' + escHtml(data.order_id) + '</div>'
-        + '<div style="color:var(--text-muted)">Доставка: ' + (data.delivery === 2 ? 'Авто' : 'P2P') + '</div>'
-        + '<br><button class="btn btn-ghost" onclick="closeBuyModal();location.reload()">Закрыть</button>'
+      body.innerHTML = '<div class="modal-state">'
+        + '<div class="modal-icon modal-icon-success">&#10003;</div>'
+        + '<div class="modal-state-title">Куплено!</div>'
+        + '<div class="modal-state-details">'
+        +   '<span>' + escHtml(name) + '</span>'
+        +   '<span class="modal-state-meta">$' + data.buy_price.toFixed(4) + ' &middot; ' + (data.delivery === 2 ? 'Авто' : 'P2P') + '</span>'
+        +   '<span class="modal-state-meta">Ордер: ' + escHtml(data.order_id) + '</span>'
+        + '</div>'
+        + '<button class="modal-btn modal-btn-secondary" onclick="closeBuyModal();saveScrollAndReload()">Закрыть</button>'
         + '</div>';
     } else {
-      body.innerHTML = '<div style="text-align:center;padding:24px">'
-        + '<div style="color:var(--danger);font-size:18px;margin-bottom:12px">Ошибка покупки</div>'
-        + '<div style="color:var(--text-muted);margin-bottom:16px">' + escHtml(data.error || 'Неизвестная ошибка') + '</div>'
-        + '<button class="btn btn-ghost" onclick="closeBuyModal()">Закрыть</button>'
-        + '</div>';
+      body.innerHTML = modalError(data.error || 'Неизвестная ошибка');
     }
   } catch (e) {
-    document.getElementById('buyModalBody').innerHTML = '<div style="text-align:center;padding:24px;color:var(--danger)">Сетевая ошибка: ' + escHtml(e.message) + '<br><br><button class="btn btn-ghost" onclick="closeBuyModal()">Закрыть</button></div>';
+    document.getElementById('buyModalBody').innerHTML = modalError('Сетевая ошибка: ' + e.message);
   } finally {
     buyInProgress = false;
   }
 }
 
 function closeBuyModal() {
-  document.getElementById('buyModal').style.display = 'none';
-}
-
-function escHtml(s) {
-  const d = document.createElement('div');
-  d.textContent = s;
-  return d.innerHTML;
+  document.getElementById('buyModal').classList.remove('active');
 }
 </script>"""
 
         # Модальное окно покупки
         buy_modal_html = """
-<div id="buyModal" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.7);
-  align-items:center;justify-content:center;backdrop-filter:blur(4px)" onclick="if(event.target===this)closeBuyModal()">
-  <div style="background:var(--card);border:1px solid var(--border);border-radius:16px;
-    padding:28px;max-width:420px;width:90%;max-height:90vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,0.5)">
+<div id="buyModal" class="modal-overlay" onclick="if(event.target===this)closeBuyModal()">
+  <div class="modal-card">
     <div id="buyModalBody"></div>
   </div>
 </div>
 
 <style>
-.btn-manual-buy {
-  padding: 4px 12px;
-  font-size: 12px;
+/* ── Modal Overlay ── */
+.modal-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: rgba(4, 6, 14, 0.6);
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+.modal-overlay.active {
+  display: flex;
+  opacity: 1;
+}
+
+/* ── Modal Card ── */
+.modal-card {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-light);
+  border-radius: 16px;
+  padding: 0;
+  max-width: 400px;
+  width: 92%;
+  max-height: 90vh;
+  overflow-y: auto;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255,255,255,0.03) inset;
+  transform: translateY(8px);
+  animation: modalSlideUp 0.2s ease forwards;
+}
+@keyframes modalSlideUp {
+  to { transform: translateY(0); }
+}
+
+/* ── Header ── */
+.modal-header {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 24px 24px 16px;
+  gap: 10px;
+}
+.modal-item-img {
+  width: 56px;
+  height: 56px;
+  object-fit: contain;
+  border-radius: 10px;
+  background: var(--bg-surface);
+  padding: 4px;
+}
+.modal-item-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  text-decoration: none;
+  text-align: center;
+  line-height: 1.4;
+  transition: color 0.15s;
+}
+.modal-item-name:hover { color: var(--accent); }
+.modal-external { font-size: 11px; opacity: 0.4; }
+
+/* ── Divider ── */
+.modal-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 0 20px;
+}
+
+/* ── Grid Rows ── */
+.modal-grid { padding: 12px 24px; }
+.modal-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 7px 0;
+}
+.modal-label {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.modal-value {
+  font-size: 13px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Highlight Block (ROI + Profit) ── */
+.modal-highlight {
+  display: flex;
+  gap: 12px;
+  padding: 12px 24px;
+}
+.modal-highlight-item {
+  flex: 1;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  text-align: center;
+}
+.modal-highlight-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+.modal-highlight-value {
+  font-size: 20px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Actions ── */
+.modal-actions {
+  display: flex;
+  gap: 10px;
+  padding: 16px 24px 24px;
+}
+.modal-btn {
+  flex: 1;
+  padding: 10px 16px;
+  font-size: 13px;
   font-weight: 600;
   border: none;
-  border-radius: 6px;
+  border-radius: 10px;
   cursor: pointer;
+  transition: all 0.15s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+.modal-btn-primary {
   background: var(--success);
   color: #fff;
-  transition: all 0.15s;
-  white-space: nowrap;
+  box-shadow: 0 2px 8px rgba(34, 197, 94, 0.25);
 }
-.btn-manual-buy:hover {
+.modal-btn-primary:hover {
   background: #16a34a;
+  box-shadow: 0 4px 16px rgba(34, 197, 94, 0.35);
   transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(34, 197, 94, 0.3);
 }
-.btn-buy-confirm {
-  padding: 10px 24px;
-  font-size: 14px;
-  font-weight: 700;
-  border: none;
-  border-radius: 8px;
-  cursor: pointer;
-  background: var(--success);
-  color: #fff;
-  transition: all 0.15s;
-}
-.btn-buy-confirm:hover {
-  background: #16a34a;
-  transform: translateY(-1px);
-  box-shadow: 0 4px 16px rgba(34, 197, 94, 0.4);
-}
-.btn-buy-confirm:disabled {
+.modal-btn-primary:disabled {
   opacity: 0.5;
   cursor: not-allowed;
   transform: none;
   box-shadow: none;
 }
-.spinner {
-  display: inline-block;
-  width: 24px;
-  height: 24px;
+.modal-btn-secondary {
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+}
+.modal-btn-secondary:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+/* ── State Screens (loading, success, error) ── */
+.modal-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 40px 24px 32px;
+  gap: 12px;
+  text-align: center;
+}
+.modal-state-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text);
+}
+.modal-state-text {
+  font-size: 13px;
+  color: var(--text-muted);
+  max-width: 280px;
+}
+.modal-state-details {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.modal-state-meta {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* ── Icons ── */
+.modal-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+.modal-icon-success {
+  background: rgba(34, 197, 94, 0.12);
+  color: var(--success);
+  border: 2px solid rgba(34, 197, 94, 0.25);
+}
+.modal-icon-error {
+  background: rgba(239, 68, 68, 0.12);
+  color: var(--danger);
+  border: 2px solid rgba(239, 68, 68, 0.25);
+}
+
+/* ── Spinner ── */
+.modal-spinner {
+  width: 32px;
+  height: 32px;
   border: 3px solid var(--border);
   border-top-color: var(--accent);
   border-radius: 50%;
-  animation: spin 0.8s linear infinite;
+  animation: modalSpin 0.7s linear infinite;
 }
-@keyframes spin { to { transform: rotate(360deg); } }
+.modal-spinner-sm {
+  width: 14px;
+  height: 14px;
+  border-width: 2px;
+  display: inline-block;
+}
+@keyframes modalSpin { to { transform: rotate(360deg); } }
+
+/* ── Table Buy Button ── */
+.btn-manual-buy {
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid rgba(34, 197, 94, 0.3);
+  border-radius: 6px;
+  cursor: pointer;
+  background: rgba(34, 197, 94, 0.1);
+  color: var(--success);
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+.btn-manual-buy:hover {
+  background: rgba(34, 197, 94, 0.2);
+  border-color: var(--success);
+}
+
+/* ── Scrollbar for modal ── */
+.modal-card::-webkit-scrollbar { width: 4px; }
+.modal-card::-webkit-scrollbar-track { background: transparent; }
+.modal-card::-webkit-scrollbar-thumb { background: var(--border-light); border-radius: 4px; }
 </style>
 """
 
