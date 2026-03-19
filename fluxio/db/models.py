@@ -56,7 +56,7 @@ class Purchase(Base):
     __tablename__ = "purchases"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    product_id: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
+    product_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     order_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     market_hash_name: Mapped[str] = mapped_column(String(255), nullable=False)
     price_usd: Mapped[float] = mapped_column(Numeric(10, 4), nullable=False)

@@ -105,11 +105,13 @@ async def get_same_item_count_24h(
 
 
 async def is_product_purchased(session: AsyncSession, product_id: str) -> bool:
-    """Проверить, был ли product_id уже куплен."""
+    """Проверить, был ли product_id уже куплен (только реальные покупки, не dry_run)."""
     result = await session.execute(
         select(func.count())
         .select_from(Purchase)
         .where(Purchase.product_id == product_id)
+        .where(Purchase.dry_run == False)
+        .where(Purchase.status.in_(["pending", "success"]))
     )
     return result.scalar_one() > 0
 

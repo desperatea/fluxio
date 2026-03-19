@@ -992,6 +992,11 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
     _container = container
 
     app = FastAPI(title="Fluxio Dashboard", version="2.0.0")
+    app.state.container = container
+
+    # ─── Manual Buy Router ──────────────────────────────────────────────────────
+    from fluxio.dashboard.manual_buy import router as manual_buy_router
+    app.include_router(manual_buy_router)
 
     # ─── Health ────────────────────────────────────────────────────────────────
 
@@ -1628,15 +1633,17 @@ connect();
         min_volume: int = 0,
         min_price: float = 0,
         max_price: float = 0,
+        sort_by: str = "discount",
     ) -> JSONResponse:
         """Каталог предметов с пагинацией и серверной фильтрацией (JSON).
 
         Фильтры применяются на стороне сервера: discount считается
         по формуле (steam_net - price) / steam_net * 100.
         Когда фильтры активны, offset/limit работают по отфильтрованным данным.
+        sort_by: discount, profit, volume, price_asc, price_desc
         """
         limit = min(limit, 200)  # Макс. 200 за запрос
-        has_filters = min_discount > 0 or min_volume > 0 or min_price > 0 or (0 < max_price < 999)
+        has_filters = min_discount > 0 or min_volume > 0 or min_price > 0 or (0 < max_price < 999) or sort_by != "discount"
         try:
             from fluxio.db.session import async_session_factory
             from fluxio.db.unit_of_work import UnitOfWork
@@ -1665,16 +1672,29 @@ connect();
                             continue
                         if 0 < max_price < 999 and price_val > max_price:
                             continue
+                        profit_val = (net - p) if (p and sp and net > 0) else 0
                         filtered.append({
                             "name": item.market_hash_name,
                             "price": p,
                             "steam": sp,
                             "discount": round(d_val, 2),
+                            "profit": round(profit_val, 4),
                             "volume": vol,
                             "image_url": item.image_url or "",
                             "app_id": item.app_id,
                             "updated": item.steam_updated_at.strftime("%H:%M") if hasattr(item, "steam_updated_at") and item.steam_updated_at else "",
                         })
+                    # Сортировка
+                    sort_keys = {
+                        "discount": lambda x: x["discount"],
+                        "profit": lambda x: x["profit"],
+                        "volume": lambda x: x["volume"],
+                        "price_asc": lambda x: x["price"] or 0,
+                        "price_desc": lambda x: x["price"] or 0,
+                    }
+                    sk = sort_keys.get(sort_by, sort_keys["discount"])
+                    reverse = sort_by != "price_asc"
+                    filtered.sort(key=sk, reverse=reverse)
                     total = len(filtered)
                     result = filtered[offset:offset + limit]
                 else:
@@ -1686,14 +1706,17 @@ connect();
                         p = float(item.price_usd) if item.price_usd else None
                         sp = float(item.steam_price_usd) if item.steam_price_usd else None
                         d_val = 0.0
+                        profit_val = 0.0
                         if p and sp and p > 0:
                             net = FeesConfig.calc_net_steam(sp)
                             d_val = (net - p) / p * 100 if net > 0 else 0
+                            profit_val = net - p
                         result.append({
                             "name": item.market_hash_name,
                             "price": p,
                             "steam": sp,
                             "discount": round(d_val, 2),
+                            "profit": round(profit_val, 4),
                             "volume": item.steam_volume_24h or 0,
                             "image_url": item.image_url or "",
                             "app_id": item.app_id,
@@ -1764,6 +1787,16 @@ connect();
       <input type="number" min="0" max="100000" value="0" step="0.01" id="filterPrice"
         style="{input_style}" placeholder="0 = no limit" onchange="onFilterChange()" onkeyup="onFilterKeyup(event)">
     </div>
+    <div class="filter-group">
+      <div class="filter-label"><span>Sort By</span></div>
+      <select id="filterSort" style="{input_style}" onchange="onFilterChange()">
+        <option value="discount">Discount ↓</option>
+        <option value="profit">Profit ↓</option>
+        <option value="volume">Volume ↓</option>
+        <option value="price_asc">Price ↑</option>
+        <option value="price_desc">Price ↓</option>
+      </select>
+    </div>
     <button class="btn btn-ghost" style="width:100%;margin-top:8px" onclick="resetFilters()">Reset</button>
   </div>
 
@@ -1799,12 +1832,13 @@ function getFilters() {{
     minV: parseInt(document.getElementById('filterVolume').value) || 0,
     minP: parseFloat(document.getElementById('filterMinPrice').value) || 0,
     maxP: parseFloat(document.getElementById('filterPrice').value) || 0,
+    sortBy: document.getElementById('filterSort').value || 'discount',
   }};
 }}
 
 function hasActiveFilters() {{
   const f = getFilters();
-  return f.minD > 0 || f.minV > 0 || f.minP > 0 || (f.maxP > 0 && f.maxP < 999);
+  return f.minD > 0 || f.minV > 0 || f.minP > 0 || (f.maxP > 0 && f.maxP < 999) || f.sortBy !== 'discount';
 }}
 
 function makeCard(it) {{
@@ -1817,7 +1851,7 @@ function makeCard(it) {{
     badge = '<span class="badge badge-info">' + it.discount.toFixed(1) + '%</span>';
   }}
   const imgHtml = it.image_url
-    ? '<img src="' + escHtml(it.image_url) + '" alt="" loading="lazy" style="max-width:100%;max-height:100%;object-fit:contain">'
+    ? '<img src="' + escHtml(it.image_url) + '" alt="" loading="lazy" referrerpolicy="no-referrer" style="max-width:100%;max-height:100%;object-fit:contain" onerror="this.style.display=\\\'none\\\'">'
     : '<i data-lucide="package" style="width:48px;height:48px;color:var(--text-muted)"></i>';
   const buyBg = it.discount >= MIN_DISCOUNT_CFG ? 'background:var(--success)' : 'background:var(--accent)';
   const steamUrl = 'https://steamcommunity.com/market/listings/' + (it.app_id || 570) + '/' + encodeURIComponent(it.name);
@@ -1847,6 +1881,7 @@ function buildUrl() {{
   if (f.minV > 0) url += '&min_volume=' + f.minV;
   if (f.minP > 0) url += '&min_price=' + f.minP;
   if (f.maxP > 0 && f.maxP < 999) url += '&max_price=' + f.maxP;
+  if (f.sortBy && f.sortBy !== 'discount') url += '&sort_by=' + f.sortBy;
   return url;
 }}
 
@@ -1933,6 +1968,7 @@ function resetFilters() {{
   document.getElementById('filterVolume').value = 0;
   document.getElementById('filterMinPrice').value = 0;
   document.getElementById('filterPrice').value = 0;
+  document.getElementById('filterSort').value = 'discount';
   onFilterChange();
 }}
 
@@ -1975,7 +2011,7 @@ loadMore();
                 from fluxio.db.session import async_session_factory
                 from fluxio.db.unit_of_work import UnitOfWork
                 async with UnitOfWork(async_session_factory) as uow:
-                    candidate_rows: list[tuple[float, str]] = []
+                    candidate_rows: list[tuple[float, float, str]] = []  # (discount, profit, html)
                     for name in names:
                         item = await uow.items.get_by_name(name)
                         if not item:
@@ -2016,9 +2052,9 @@ loadMore();
                             f'style="color:var(--accent);font-size:12px">Steam</a></td>'
                             f"</tr>"
                         )
-                        candidate_rows.append((d_val, row))
-                    candidate_rows.sort(key=lambda x: x[0], reverse=True)
-                    rows_html = "".join(r for _, r in candidate_rows)
+                        candidate_rows.append((d_val, profit_val, row))
+                    candidate_rows.sort(key=lambda x: x[0], reverse=True)  # по discount
+                    rows_html = "".join(r for _, _, r in candidate_rows)
         except Exception as e:
             rows_html = f"<tr><td colspan='7'>Error: {_esc(e)}</td></tr>"
 
@@ -2278,14 +2314,28 @@ document.querySelectorAll('th.sortable').forEach(th => {
                     )
 
                     hidden_row = ' style="display:none"' if row_idx >= PURCHASES_PAGE_SIZE else ""
+                    # Кнопка ручной покупки — только для dry_run с успешным статусом
+                    buy_btn = ""
+                    if p.dry_run and p.status in ("success", "pending"):
+                        buy_btn = (
+                            f'<button class="btn-manual-buy" '
+                            f'data-name="{_esc(p.market_hash_name)}" '
+                            f'data-price="{price:.4f}" '
+                            f'onclick="openBuyDialog(this)">'
+                            f'Купить</button>'
+                        )
+
                     rows.append(
                         f'<tr class="p-row" data-profit="{profit:.6f}" data-volume="{vol}" '
+                        f'data-discount="{float(p.discount_percent) if p.discount_percent else 0:.4f}" '
                         f'data-median-profit="{median_profit:.6f}" data-ratio="{ratio:.4f}"'
                         f'{row_style}{hidden_row}>'
                         f'<td style="white-space:nowrap;color:var(--text-muted);font-size:12px">{ts}</td>'
                         f'<td style="white-space:nowrap">{p_img_tag}'
-                        f'{_esc(p.market_hash_name)}'
+                        f'<a href="{steam_url}" target="_blank" style="color:var(--text)">'
+                        f'{_esc(p.market_hash_name)}</a>'
                         f'{filter_note}</td>'
+                        f"<td>{buy_btn}</td>"
                         f"<td>${price:.4f}</td>"
                         f"<td>${steam:.4f}</td>"
                         f"<td>{median_str}</td>"
@@ -2295,18 +2345,16 @@ document.querySelectorAll('th.sortable').forEach(th => {
                         f"<td>{median_profit_str}</td>"
                         f"<td>{vol or '—'}</td>"
                         f'<td><span class="badge {status_badge}">{_esc(p.status)}</span>{dry_badge}</td>'
-                        f'<td><a href="{steam_url}" target="_blank" '
-                        f'style="color:var(--accent);font-size:12px">Steam</a></td>'
                         f"</tr>"
                     )
                     row_idx += 1
                 rows_html = "".join(rows)
         except Exception as e:
             logger.exception("Dashboard: ошибка на странице покупок")
-            rows_html = f"<tr><td colspan='12'>Error: {_esc(e)}</td></tr>"
+            rows_html = f"<tr><td colspan='13'>Error: {_esc(e)}</td></tr>"
 
         if not rows_html:
-            rows_html = '<tr><td colspan="12" style="text-align:center;color:var(--text-muted);padding:32px">No purchases yet.</td></tr>'
+            rows_html = '<tr><td colspan="13" style="text-align:center;color:var(--text-muted);padding:32px">No purchases yet.</td></tr>'
 
         # Сериализация данных для графиков
         import json as _json
@@ -2372,14 +2420,14 @@ document.querySelectorAll('th.sortable').forEach(th => {
 <div class="table-wrap" style="max-height:70vh;overflow:auto"><div class="table-scroll">
 <table id="purchases-table">
 <thead style="position:sticky;top:0;z-index:1"><tr>
-  <th>Date</th><th>Item</th><th>Price</th><th>Steam</th>
+  <th>Date</th><th>Item</th><th></th><th>Price</th><th>Steam</th>
   <th>Median 30d</th>
   <th class="sortable" data-key="ratio">Ratio</th>
-  <th>Discount</th>
+  <th class="sortable" data-key="discount">Discount</th>
   <th class="sortable" data-key="profit">Profit</th>
   <th class="sortable" data-key="median-profit">By Median</th>
   <th class="sortable" data-key="volume">Vol 24h</th>
-  <th>Status</th><th>Link</th>
+  <th>Status</th>
 </tr></thead>
 <tbody>{rows_html}</tbody>
 </table>
@@ -2440,6 +2488,18 @@ document.querySelectorAll('th.sortable').forEach(th => {
     rows.forEach(r => tbody.appendChild(r));
   });
 });
+
+// Сортировка по дисконту по умолчанию (убывание)
+{
+  const tbody = document.querySelector('#purchases-table tbody');
+  if (tbody) {
+    const rows = Array.from(tbody.querySelectorAll('tr'));
+    rows.sort((a, b) => (parseFloat(b.dataset.discount) || 0) - (parseFloat(a.dataset.discount) || 0));
+    rows.forEach(r => tbody.appendChild(r));
+    const th = document.querySelector('th[data-key="discount"]');
+    if (th) th.classList.add('sort-desc');
+  }
+}
 
 // ── Графики покупок ──
 const chartDefaults = {
@@ -2592,9 +2652,160 @@ new Chart(document.getElementById('chartByHour'), {
     }
   }
 });
+// ── Manual Buy ──
+let buyInProgress = false;
+
+async function openBuyDialog(btn) {
+  if (buyInProgress) return;
+  const name = btn.dataset.name;
+  const modal = document.getElementById('buyModal');
+  const body = document.getElementById('buyModalBody');
+  modal.style.display = 'flex';
+  body.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted)"><div class="spinner"></div><br>Загрузка данных...</div>';
+
+  try {
+    const resp = await fetch('/api/v1/manual-buy/preflight?market_hash_name=' + encodeURIComponent(name));
+    const data = await resp.json();
+    if (!data.available) {
+      body.innerHTML = '<div style="text-align:center;padding:24px"><div style="color:var(--danger);font-size:18px;margin-bottom:12px">Недоступно</div><div style="color:var(--text-muted)">' + escHtml(data.error || 'Неизвестная ошибка') + '</div><br><button class="btn btn-ghost" onclick="closeBuyModal()">Закрыть</button></div>';
+      return;
+    }
+    const profitColor = data.expected_profit_usd >= 0 ? 'var(--success)' : 'var(--danger)';
+    const imgTag = data.image_url ? '<img src="' + escHtml(data.image_url) + '" style="width:64px;height:64px;object-fit:contain;border-radius:8px;margin-bottom:8px" referrerpolicy="no-referrer">' : '';
+    const steamUrl = 'https://steamcommunity.com/market/listings/570/' + encodeURIComponent(data.market_hash_name);
+    body.innerHTML = '<div style="text-align:center;margin-bottom:16px">' + imgTag + '<a href="' + steamUrl + '" target="_blank" style="font-size:16px;font-weight:600;color:var(--accent);text-decoration:none">' + escHtml(data.market_hash_name) + ' <span style="font-size:12px;opacity:0.6">↗</span></a></div>'
+      + '<table style="width:100%;margin-bottom:20px;font-size:14px">'
+      + '<tr><td style="color:var(--text-muted);padding:6px 0">Цена CS2DT</td><td style="text-align:right;font-weight:600;color:var(--accent)">$' + data.cheapest_price_usd.toFixed(4) + '</td></tr>'
+      + '<tr><td style="color:var(--text-muted);padding:6px 0">Цена Steam</td><td style="text-align:right">$' + data.steam_price_usd.toFixed(4) + '</td></tr>'
+      + '<tr><td style="color:var(--text-muted);padding:6px 0">Net Steam</td><td style="text-align:right">$' + data.net_steam_usd.toFixed(4) + '</td></tr>'
+      + '<tr><td style="color:var(--text-muted);padding:6px 0">ROI</td><td style="text-align:right;color:' + profitColor + '">' + data.discount_percent.toFixed(1) + '%</td></tr>'
+      + '<tr><td style="color:var(--text-muted);padding:6px 0">Ожид. профит</td><td style="text-align:right;color:' + profitColor + '">$' + (data.expected_profit_usd || 0).toFixed(4) + '</td></tr>'
+      + '<tr style="border-top:1px solid var(--border)"><td style="color:var(--text-muted);padding:10px 0 6px">Баланс</td><td style="text-align:right;padding-top:10px">$' + data.balance_usd.toFixed(2) + '</td></tr>'
+      + '<tr><td style="color:var(--text-muted);padding:6px 0">После покупки</td><td style="text-align:right;font-weight:600">$' + data.balance_after_usd.toFixed(2) + '</td></tr>'
+      + '<tr><td style="color:var(--text-muted);padding:6px 0">Объём 24ч</td><td style="text-align:right">' + data.volume_24h + '</td></tr>'
+      + '<tr><td style="color:var(--text-muted);padding:6px 0">Лотов</td><td style="text-align:right">' + data.listings_count + '</td></tr>'
+      + '</table>'
+      + '<div style="display:flex;gap:12px;justify-content:center">'
+      + '<button class="btn btn-ghost" onclick="closeBuyModal()">Отмена</button>'
+      + '<button class="btn btn-buy-confirm" id="confirmBuyBtn" data-name="' + escHtml(data.market_hash_name) + '" data-price="' + data.cheapest_price_usd + '" onclick="confirmBuy(this.dataset.name, parseFloat(this.dataset.price))">Подтвердить покупку</button>'
+      + '</div>';
+  } catch (e) {
+    body.innerHTML = '<div style="text-align:center;padding:24px;color:var(--danger)">Ошибка: ' + escHtml(e.message) + '<br><br><button class="btn btn-ghost" onclick="closeBuyModal()">Закрыть</button></div>';
+  }
+}
+
+async function confirmBuy(name, maxPrice) {
+  if (buyInProgress) return;
+  buyInProgress = true;
+  const btn = document.getElementById('confirmBuyBtn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Покупка...'; }
+
+  try {
+    const resp = await fetch('/api/v1/manual-buy', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({market_hash_name: name, max_price_usd: maxPrice})
+    });
+    const data = await resp.json();
+    const body = document.getElementById('buyModalBody');
+    if (data.ok) {
+      body.innerHTML = '<div style="text-align:center;padding:24px">'
+        + '<div style="color:var(--success);font-size:24px;margin-bottom:12px">&#10003; Куплено!</div>'
+        + '<div style="margin-bottom:8px"><strong>' + escHtml(name) + '</strong></div>'
+        + '<div style="color:var(--text-muted)">Цена: $' + data.buy_price.toFixed(4) + '</div>'
+        + '<div style="color:var(--text-muted)">Ордер: ' + escHtml(data.order_id) + '</div>'
+        + '<div style="color:var(--text-muted)">Доставка: ' + (data.delivery === 2 ? 'Авто' : 'P2P') + '</div>'
+        + '<br><button class="btn btn-ghost" onclick="closeBuyModal();location.reload()">Закрыть</button>'
+        + '</div>';
+    } else {
+      body.innerHTML = '<div style="text-align:center;padding:24px">'
+        + '<div style="color:var(--danger);font-size:18px;margin-bottom:12px">Ошибка покупки</div>'
+        + '<div style="color:var(--text-muted);margin-bottom:16px">' + escHtml(data.error || 'Неизвестная ошибка') + '</div>'
+        + '<button class="btn btn-ghost" onclick="closeBuyModal()">Закрыть</button>'
+        + '</div>';
+    }
+  } catch (e) {
+    document.getElementById('buyModalBody').innerHTML = '<div style="text-align:center;padding:24px;color:var(--danger)">Сетевая ошибка: ' + escHtml(e.message) + '<br><br><button class="btn btn-ghost" onclick="closeBuyModal()">Закрыть</button></div>';
+  } finally {
+    buyInProgress = false;
+  }
+}
+
+function closeBuyModal() {
+  document.getElementById('buyModal').style.display = 'none';
+}
+
+function escHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
 </script>"""
 
-        return _layout("Purchases", "/purchases", content,
+        # Модальное окно покупки
+        buy_modal_html = """
+<div id="buyModal" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.7);
+  align-items:center;justify-content:center;backdrop-filter:blur(4px)" onclick="if(event.target===this)closeBuyModal()">
+  <div style="background:var(--card);border:1px solid var(--border);border-radius:16px;
+    padding:28px;max-width:420px;width:90%;max-height:90vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,0.5)">
+    <div id="buyModalBody"></div>
+  </div>
+</div>
+
+<style>
+.btn-manual-buy {
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  background: var(--success);
+  color: #fff;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+.btn-manual-buy:hover {
+  background: #16a34a;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(34, 197, 94, 0.3);
+}
+.btn-buy-confirm {
+  padding: 10px 24px;
+  font-size: 14px;
+  font-weight: 700;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  background: var(--success);
+  color: #fff;
+  transition: all 0.15s;
+}
+.btn-buy-confirm:hover {
+  background: #16a34a;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 16px rgba(34, 197, 94, 0.4);
+}
+.btn-buy-confirm:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+.spinner {
+  display: inline-block;
+  width: 24px;
+  height: 24px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+</style>
+"""
+
+        return _layout("Purchases", "/purchases", content + buy_modal_html,
                        extra_head='<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>') + extra_js
 
     return app
