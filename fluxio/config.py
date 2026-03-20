@@ -130,6 +130,24 @@ class AntiManipulationConfig:
         self.max_price_to_median_ratio: float = data.get("max_price_to_median_ratio", 2.0)
         # Мин. кол-во листингов на Steam Market (защита от неликвидных предметов)
         self.min_steam_listings: int = data.get("min_steam_listings", 15)
+        # Проверка buy order (реальный спрос)
+        self.max_spread_ratio_cheap: float = data.get("max_spread_ratio_cheap", 3.0)
+        self.max_spread_ratio_normal: float = data.get("max_spread_ratio_normal", 2.0)
+        self.cheap_price_threshold: float = data.get("cheap_price_threshold", 0.15)
+        self.require_buy_orders: bool = data.get("require_buy_orders", True)
+
+
+class ScoringConfig:
+    """Параметры Scoring v2 — оценка по реальным продажам."""
+
+    def __init__(self, data: dict[str, Any]) -> None:
+        self.min_volume_30d: int = data.get("min_volume_30d", 50)
+        self.min_sell_probability: float = data.get("min_sell_probability", 90.0)
+        self.min_concentration: float = data.get("min_concentration", 40.0)
+        self.min_profit_margin: float = data.get("min_profit_margin", 20.0)
+        self.analysis_period_days: int = data.get("analysis_period_days", 30)
+        # Режим обучения: считать метрики и логировать, но решения по старой системе
+        self.learning_mode: bool = data.get("learning_mode", True)
 
 
 class SafetyConfig:
@@ -219,6 +237,7 @@ class AppConfig:
         self.fees = FeesConfig(raw.get("fees", {}))
         self.monitoring = MonitoringConfig(raw.get("monitoring", {}))
         self.anti_manipulation = AntiManipulationConfig(raw.get("anti_manipulation", {}))
+        self.scoring = ScoringConfig(raw.get("scoring", {}))
         self.safety = SafetyConfig(raw.get("safety", {}))
         self.update_queue = UpdateQueueConfig(raw.get("update_queue", {}))
         self.notifications = NotificationsConfig(raw.get("notifications", {}))

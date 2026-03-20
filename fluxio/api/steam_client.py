@@ -703,6 +703,18 @@ class SteamClient:
                 f"Steam pricehistory сетевая ошибка "
                 f"(auth-канал {channel.label}): {e}"
             )
+            # Сбрасываем сломанную сессию — будет пересоздана при следующем запросе
+            if channel.session and not channel.session.closed:
+                await channel.session.close()
+            channel.session = None
+            channel.fail_count += 1
+            if channel.fail_count >= 3 and channel.has_auth:
+                channel.has_auth = False
+                self._has_auth = any(ch.has_auth for ch in self._auth_channels)
+                logger.warning(
+                    f"Auth-канал {channel.label} отключён "
+                    f"(3 подряд сетевые ошибки)"
+                )
             return None
 
         if data and data.get("success"):

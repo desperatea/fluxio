@@ -11,6 +11,7 @@ Rate limit: 50 QPS (по документации)
 from __future__ import annotations
 
 import asyncio
+import json as _json
 from typing import Any
 
 import ssl
@@ -164,8 +165,13 @@ class C5GameClient:
                     ) as resp:
                         status = resp.status
                         raw = await resp.read()
-                        import json as _json
-                        data = _json.loads(raw.decode("utf-8"))
+                        try:
+                            data = _json.loads(raw.decode("utf-8", errors="replace"))
+                        except (ValueError, UnicodeDecodeError) as parse_err:
+                            raise C5GameAPIError(
+                                f"Ошибка парсинга ответа: {parse_err} (status={status}, body={raw[:200]!r})",
+                                status_code=status,
+                            ) from parse_err
 
                         logger.debug(
                             f"C5Game ← {status} {path} "
@@ -253,7 +259,6 @@ class C5GameClient:
         session = await self._get_session()
         retries = retry_config or RETRY_5XX
 
-        import json as _json
         for attempt in range(retries.max_retries + 1):
             retry_delay: float | None = None
 

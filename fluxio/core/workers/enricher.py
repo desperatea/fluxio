@@ -1,13 +1,14 @@
-"""Enricher воркер — обогащение предметов данными pricehistory (30д медиана).
+"""Enricher воркер — обогащение предметов данными pricehistory.
 
 Алгоритм одного цикла:
 1. SPOP steam:enrich_queue → N предметов (по числу auth-каналов)
 2. Для каждого параллельно (asyncio.gather):
-   a. Проверить enriched_at в БД — если свежий (< 7 дней), пропустить
+   a. Проверить свежесть (приоритетная частота по sell_probability)
    b. Запросить Steam get_price_history() (требует steamLoginSecure)
    c. Вычислить 30-дневную медиану через _calc_from_history()
    d. Сохранить историю в steam_sales_history
-   e. Обновить Item: steam_median_30d, steam_volume_7d, enriched_at + метрики
+   e. Вычислить Scoring v2 метрики из истории продаж
+   f. Обновить Item: медиана, объём, enriched_at, scoring метрики
 
 Интервал между циклами — enricher_interval_seconds (по умолчанию 5с).
 Параллельность — по числу доступных auth-каналов Steam.
@@ -16,7 +17,9 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import statistics
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 
 from loguru import logger
@@ -95,27 +98,28 @@ class EnricherWorker(BaseWorker):
     async def _enrich_item(self, hash_name: str) -> None:
         """Обогатить один предмет данными pricehistory.
 
-        1. Проверить свежесть enriched_at в БД
+        1. Проверить свежесть (приоритетная: кандидаты чаще, остальные реже)
         2. Запросить pricehistory у Steam
         3. Сохранить историю продаж в steam_sales_history
-        4. Обновить поля Item: steam_median_30d, steam_volume_7d, enriched_at
+        4. Вычислить Scoring v2 метрики
+        5. Обновить поля Item
         """
-        freshness_days = config.update_queue.enricher_freshness_days
-
-        # Проверяем свежесть обогащения в БД
+        # Проверяем свежесть обогащения в БД (приоритетная частота)
         async with UnitOfWork(async_session_factory) as uow:
             item = await uow.items.get_by_name(hash_name)
             if item is None:
                 logger.warning(f"Enricher: пропуск [{hash_name}] — не найден в БД")
                 return
 
+            freshness_days = self._get_freshness_days(item)
+
             if item.enriched_at is not None:
                 age = datetime.now(timezone.utc) - item.enriched_at
                 if age < timedelta(days=freshness_days):
                     hours_ago = int(age.total_seconds() / 3600)
-                    logger.info(
+                    logger.debug(
                         f"Enricher: пропуск [{hash_name}] — "
-                        f"обогащён {hours_ago}ч назад (лимит {freshness_days * 24}ч)"
+                        f"обогащён {hours_ago}ч назад (лимит {freshness_days}д)"
                     )
                     return
 
@@ -148,12 +152,16 @@ class EnricherWorker(BaseWorker):
         # Сохраняем историю продаж в steam_sales_history
         await self._save_sales_history(hash_name, history)
 
-        # Вычисляем метрики анти-манипуляции
+        # Вычисляем метрики анти-манипуляции (старая система)
         price_cv = self._calc_price_cv(history)
         spike_ratio = self._calc_spike_ratio(history)
 
         # Получаем item_nameid (однократно, кэшируется навсегда)
         item_nameid = await self._ensure_item_nameid(hash_name, app_id)
+
+        # Вычисляем Scoring v2 метрики из истории продаж
+        parsed_30d = self._parse_history_30d(history)
+        scoring = self._calc_scoring_metrics(parsed_30d)
 
         # Обновляем Item в БД
         sales_at_price_val: int | None = None
@@ -176,7 +184,41 @@ class EnricherWorker(BaseWorker):
                     )
                 sales_at_price_val = item.sales_at_current_price
 
+                # Scoring v2 поля
+                if scoring is not None:
+                    item.weighted_price_usd = scoring["weighted_price"]
+                    item.price_concentration = scoring["concentration"]
+                    item.p10_price_usd = scoring["p10_price"]
+                    item.histogram_updated_at = now
+
+                    # sell_probability и expected_profit зависят от CS2DT цены
+                    cs2dt_price = float(item.price_usd or 0)
+                    if cs2dt_price > 0:
+                        sp = self._calc_sell_probability(
+                            parsed_30d, cs2dt_price,
+                            config.scoring.min_profit_margin,
+                        )
+                        item.sell_probability = sp
+
+                        net_weighted = self._calc_net_steam(scoring["weighted_price"])
+                        item.expected_profit_usd = round(net_weighted - cs2dt_price, 4)
+
                 await uow.commit()
+
+        scoring_log = ""
+        if scoring is not None:
+            scoring_log = (
+                f"scoring: wp=${scoring['weighted_price']:.4f}, "
+                f"conc={scoring['concentration']:.1f}%, "
+                f"p10=${scoring['p10_price']:.4f}"
+            )
+            async with UnitOfWork(async_session_factory) as uow:
+                item = await uow.items.get_by_name(hash_name)
+                if item and item.sell_probability is not None:
+                    scoring_log += (
+                        f", sp={item.sell_probability:.1f}%, "
+                        f"profit=${item.expected_profit_usd or 0:.4f}"
+                    )
 
         logger.info(
             f"Enricher: обогащён [{hash_name}] "
@@ -185,7 +227,108 @@ class EnricherWorker(BaseWorker):
             f"CV={price_cv:.3f}, spike={spike_ratio:.2f}, "
             f"sales@price={sales_at_price_val if sales_at_price_val is not None else '?'}, "
             f"nameid={item_nameid or '?'}"
+            f"{f', {scoring_log}' if scoring_log else ''}"
         )
+
+    @staticmethod
+    def _get_freshness_days(item: object) -> int:
+        """Приоритетная частота обновления по sell_probability."""
+        sp = getattr(item, "sell_probability", None)
+        if sp is not None and sp >= 80:
+            return 2   # кандидаты — каждые 2 дня
+        if sp is not None and sp >= 50:
+            return 4   # перспективные — каждые 4 дня
+        return 10      # остальные — каждые 10 дней
+
+    @staticmethod
+    def _calc_net_steam(sale_price: float) -> float:
+        """Чистая сумма после продажи на Steam Market."""
+        valve_fee = max(math.floor(sale_price * 5) / 100, 0.01)
+        game_fee = max(math.floor(sale_price * 10) / 100, 0.01)
+        return round(sale_price - valve_fee - game_fee, 2)
+
+    @staticmethod
+    def _find_break_even(
+        cs2dt_price: float, min_profit_margin: float,
+    ) -> float:
+        """Найти break-even цену продажи (с запасом min_profit_margin %)."""
+        target = cs2dt_price * (1.0 + min_profit_margin / 100.0)
+        for cents in range(1, 10000):
+            sale = cents / 100.0
+            net = EnricherWorker._calc_net_steam(sale)
+            if net >= target:
+                return sale
+        return 99.99  # невозможно — цена запредельная
+
+    @staticmethod
+    def _calc_sell_probability(
+        parsed_30d: list[tuple[datetime, float, int]],
+        cs2dt_price: float,
+        min_profit_margin: float,
+    ) -> float:
+        """Вероятность продажи выше break-even (0–100)."""
+        if not parsed_30d:
+            return 0.0
+        break_even = EnricherWorker._find_break_even(cs2dt_price, min_profit_margin)
+        total = 0
+        above = 0
+        for _dt, price, vol in parsed_30d:
+            total += vol
+            if price >= break_even:
+                above += vol
+        if total == 0:
+            return 0.0
+        return round(above / total * 100, 1)
+
+    @staticmethod
+    def _calc_scoring_metrics(
+        parsed_30d: list[tuple[datetime, float, int]],
+    ) -> dict[str, float] | None:
+        """Вычислить scoring метрики из распарсенной истории 30д.
+
+        Возвращает dict с ключами: weighted_price, concentration, p10_price, volume_30d.
+        """
+        if not parsed_30d:
+            return None
+
+        # Агрегация по ценовым точкам (в центах для точности)
+        sales_by_cents: Counter[int] = Counter()
+        all_prices: list[float] = []
+
+        for _dt, price, vol in parsed_30d:
+            cents = round(price * 100)
+            sales_by_cents[cents] += vol
+            all_prices.extend([price] * vol)
+
+        total_volume = len(all_prices)
+        if total_volume == 0:
+            return None
+
+        # Взвешенная цена топ-3 точек продаж
+        top3 = sales_by_cents.most_common(3)
+        top3_total_vol = sum(v for _, v in top3)
+        if top3_total_vol > 0:
+            weighted_price = sum((c / 100.0) * v for c, v in top3) / top3_total_vol
+        else:
+            weighted_price = statistics.median(all_prices)
+
+        # Концентрация: % продаж в полосе ±20% от weighted_price
+        low = weighted_price * 0.8
+        high = weighted_price * 1.2
+        in_band = sum(v for c, v in sales_by_cents.items() if low <= c / 100.0 <= high)
+        concentration = round(in_band / total_volume * 100, 1)
+
+        # P10: 10-й перцентиль
+        sorted_prices = sorted(all_prices)
+        p10_idx = max(0, int(total_volume * 0.1) - 1)
+        p10_price = sorted_prices[p10_idx]
+
+        return {
+            "weighted_price": round(weighted_price, 4),
+            "concentration": concentration,
+            "p10_price": round(p10_price, 4),
+            "volume_30d": total_volume,
+        }
 
     async def _save_sales_history(
         self, hash_name: str, history: list[list],

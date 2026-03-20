@@ -48,6 +48,13 @@ def _make_item(**overrides) -> MagicMock:
         "steam_buy_order_price": 0.70,
         "cs2dt_item_id": 99999,
         "app_id": 570,
+        # Scoring v2
+        "sell_probability": 95.0,
+        "weighted_price_usd": 0.85,
+        "expected_profit_usd": 0.20,
+        "price_concentration": 60.0,
+        "p10_price_usd": 0.60,
+        "histogram_updated_at": datetime.now(timezone.utc) - timedelta(days=1),
     }
     defaults.update(overrides)
     for k, v in defaults.items():
@@ -414,6 +421,10 @@ class TestUpdaterEarlyEnrichmentCheck:
              patch("fluxio.core.workers.updater.UnitOfWork", return_value=uow), \
              patch("fluxio.core.workers.updater.config") as mock_config:
             mock_config.update_queue.enricher_freshness_days = 7
+            mock_config.scoring.learning_mode = True
+            mock_config.scoring.min_sell_probability = 90
+            mock_config.scoring.min_concentration = 40
+            mock_config.scoring.min_profit_margin = 20
             mock_config.games = [MagicMock(enabled=True, app_id=570)]
 
             from fluxio.core.workers.updater import UpdaterWorker
@@ -444,6 +455,10 @@ class TestUpdaterEarlyEnrichmentCheck:
              patch("fluxio.core.workers.updater.UnitOfWork", return_value=uow), \
              patch("fluxio.core.workers.updater.config") as mock_config:
             mock_config.update_queue.enricher_freshness_days = 7
+            mock_config.scoring.learning_mode = True
+            mock_config.scoring.min_sell_probability = 90
+            mock_config.scoring.min_concentration = 40
+            mock_config.scoring.min_profit_margin = 20
             mock_config.games = [MagicMock(enabled=True, app_id=570)]
 
             from fluxio.core.workers.updater import UpdaterWorker
@@ -464,9 +479,17 @@ class TestUpdaterEarlyEnrichmentCheck:
              patch("fluxio.core.workers.updater.UnitOfWork", return_value=uow), \
              patch("fluxio.core.workers.updater.config") as mock_config:
             mock_config.update_queue.enricher_freshness_days = 7
+            mock_config.scoring.learning_mode = True
+            mock_config.scoring.min_sell_probability = 90
+            mock_config.scoring.min_concentration = 40
+            mock_config.scoring.min_profit_margin = 20
             mock_config.games = [MagicMock(enabled=True, app_id=570)]
             mock_config.anti_manipulation.max_price_to_median_ratio = 2.0
             mock_config.anti_manipulation.min_steam_listings = 15
+            mock_config.anti_manipulation.max_spread_ratio_cheap = 3.0
+            mock_config.anti_manipulation.max_spread_ratio_normal = 2.0
+            mock_config.anti_manipulation.cheap_price_threshold = 0.15
+            mock_config.anti_manipulation.require_buy_orders = True
             mock_config.anti_manipulation.max_spike_ratio = 2.0
             mock_config.anti_manipulation.max_price_cv = 0.5
             mock_config.anti_manipulation.min_sales_at_current_price = 5
@@ -535,6 +558,14 @@ class TestUpdaterRatioCheck:
             mock_config.update_queue.enricher_freshness_days = 7
             mock_config.anti_manipulation.max_price_to_median_ratio = 2.0
             mock_config.anti_manipulation.min_steam_listings = 15
+            mock_config.anti_manipulation.max_spread_ratio_cheap = 3.0
+            mock_config.anti_manipulation.max_spread_ratio_normal = 2.0
+            mock_config.anti_manipulation.cheap_price_threshold = 0.15
+            mock_config.anti_manipulation.require_buy_orders = True
+            mock_config.scoring.learning_mode = True
+            mock_config.scoring.min_sell_probability = 90
+            mock_config.scoring.min_concentration = 40
+            mock_config.scoring.min_profit_margin = 20
             mock_config.games = [MagicMock(enabled=True, app_id=570)]
             mock_config.fees.steam_fee_percent = 15.0
             mock_config.fees.steam_valve_fee_percent = 5.0
@@ -581,6 +612,10 @@ class TestUpdaterRatioCheck:
             mock_config.update_queue.enricher_freshness_days = 7
             mock_config.anti_manipulation.max_price_to_median_ratio = 2.0
             mock_config.anti_manipulation.min_steam_listings = 15
+            mock_config.anti_manipulation.max_spread_ratio_cheap = 3.0
+            mock_config.anti_manipulation.max_spread_ratio_normal = 2.0
+            mock_config.anti_manipulation.cheap_price_threshold = 0.15
+            mock_config.anti_manipulation.require_buy_orders = True
             mock_config.anti_manipulation.max_spike_ratio = 2.0
             mock_config.anti_manipulation.max_price_cv = 0.5
             mock_config.anti_manipulation.min_sales_at_current_price = 5
@@ -591,6 +626,10 @@ class TestUpdaterRatioCheck:
             mock_config.trading.min_price_usd = 0.04
             mock_config.trading.max_price_usd = 1.0
             mock_config.trading.min_sales_volume_7d = 40
+            mock_config.scoring.learning_mode = True
+            mock_config.scoring.min_sell_probability = 90
+            mock_config.scoring.min_concentration = 40
+            mock_config.scoring.min_profit_margin = 20
             mock_config.games = [MagicMock(enabled=True, app_id=570)]
 
             from fluxio.core.workers.updater import UpdaterWorker
@@ -660,6 +699,10 @@ class TestUpdaterHistogram:
             mock_config.update_queue.enricher_freshness_days = 7
             mock_config.anti_manipulation.min_steam_listings = 15
             mock_config.anti_manipulation.max_price_to_median_ratio = 2.0
+            mock_config.scoring.learning_mode = True
+            mock_config.scoring.min_sell_probability = 90
+            mock_config.scoring.min_concentration = 40
+            mock_config.scoring.min_profit_margin = 20
             mock_config.games = [MagicMock(enabled=True, app_id=570)]
             mock_config.fees.steam_fee_percent = 15.0
             mock_config.fees.steam_valve_fee_percent = 5.0
@@ -694,6 +737,10 @@ class TestUpdaterHistogram:
             mock_config.update_queue.enricher_freshness_days = 7
             mock_config.anti_manipulation.min_steam_listings = 15
             mock_config.anti_manipulation.max_price_to_median_ratio = 2.0
+            mock_config.anti_manipulation.max_spread_ratio_cheap = 3.0
+            mock_config.anti_manipulation.max_spread_ratio_normal = 2.0
+            mock_config.anti_manipulation.cheap_price_threshold = 0.15
+            mock_config.anti_manipulation.require_buy_orders = True
             mock_config.anti_manipulation.max_spike_ratio = 2.0
             mock_config.anti_manipulation.max_price_cv = 0.5
             mock_config.anti_manipulation.min_sales_at_current_price = 5
@@ -704,6 +751,10 @@ class TestUpdaterHistogram:
             mock_config.trading.min_price_usd = 0.04
             mock_config.trading.max_price_usd = 1.0
             mock_config.trading.min_sales_volume_7d = 40
+            mock_config.scoring.learning_mode = True
+            mock_config.scoring.min_sell_probability = 90
+            mock_config.scoring.min_concentration = 40
+            mock_config.scoring.min_profit_margin = 20
             mock_config.games = [MagicMock(enabled=True, app_id=570)]
 
             from fluxio.core.workers.updater import UpdaterWorker
@@ -734,6 +785,10 @@ class TestUpdaterHistogram:
             mock_config.update_queue.enricher_freshness_days = 7
             mock_config.anti_manipulation.min_steam_listings = 15
             mock_config.anti_manipulation.max_price_to_median_ratio = 2.0
+            mock_config.scoring.learning_mode = True
+            mock_config.scoring.min_sell_probability = 90
+            mock_config.scoring.min_concentration = 40
+            mock_config.scoring.min_profit_margin = 20
             mock_config.games = [MagicMock(enabled=True, app_id=570)]
 
             from fluxio.core.workers.updater import UpdaterWorker
@@ -764,6 +819,10 @@ class TestUpdaterHistogram:
             mock_config.update_queue.enricher_freshness_days = 7
             mock_config.anti_manipulation.min_steam_listings = 15
             mock_config.anti_manipulation.max_price_to_median_ratio = 2.0
+            mock_config.anti_manipulation.max_spread_ratio_cheap = 3.0
+            mock_config.anti_manipulation.max_spread_ratio_normal = 2.0
+            mock_config.anti_manipulation.cheap_price_threshold = 0.15
+            mock_config.anti_manipulation.require_buy_orders = True
             mock_config.anti_manipulation.max_spike_ratio = 2.0
             mock_config.anti_manipulation.max_price_cv = 0.5
             mock_config.anti_manipulation.min_sales_at_current_price = 5
@@ -774,6 +833,10 @@ class TestUpdaterHistogram:
             mock_config.trading.min_price_usd = 0.04
             mock_config.trading.max_price_usd = 1.0
             mock_config.trading.min_sales_volume_7d = 40
+            mock_config.scoring.learning_mode = True
+            mock_config.scoring.min_sell_probability = 90
+            mock_config.scoring.min_concentration = 40
+            mock_config.scoring.min_profit_margin = 20
             mock_config.games = [MagicMock(enabled=True, app_id=570)]
 
             from fluxio.core.workers.updater import UpdaterWorker
@@ -862,6 +925,10 @@ class TestBuyerSafetyNet:
             mock_config.fees.steam_valve_fee_percent = 5.0
             mock_config.fees.steam_game_fee_percent = 10.0
             mock_config.update_queue.buyer_interval_seconds = 60
+            mock_config.scoring.learning_mode = True
+            mock_config.scoring.min_sell_probability = 90
+            mock_config.scoring.min_concentration = 40
+            mock_config.scoring.min_profit_margin = 20
             mock_config.games = [MagicMock(enabled=True, app_id=570)]
 
             from fluxio.core.workers.buyer import BuyerWorker
@@ -912,6 +979,10 @@ class TestBuyerSafetyNet:
             mock_config.fees.steam_game_fee_percent = 10.0
             mock_config.update_queue.buyer_interval_seconds = 60
             mock_config.env.trade_url = "https://steamcommunity.com/tradeoffer/new/?partner=123"
+            mock_config.scoring.learning_mode = True
+            mock_config.scoring.min_sell_probability = 90
+            mock_config.scoring.min_concentration = 40
+            mock_config.scoring.min_profit_margin = 20
             mock_config.games = [MagicMock(enabled=True, app_id=570)]
 
             from fluxio.core.workers.buyer import BuyerWorker
@@ -951,6 +1022,10 @@ class TestBuyerSafetyNet:
             mock_config.fees.steam_valve_fee_percent = 5.0
             mock_config.fees.steam_game_fee_percent = 10.0
             mock_config.update_queue.buyer_interval_seconds = 60
+            mock_config.scoring.learning_mode = True
+            mock_config.scoring.min_sell_probability = 90
+            mock_config.scoring.min_concentration = 40
+            mock_config.scoring.min_profit_margin = 20
             mock_config.games = [MagicMock(enabled=True, app_id=570)]
 
             from fluxio.core.workers.buyer import BuyerWorker

@@ -29,6 +29,9 @@ STEAM_PRICE_TTL = 60 * 60          # 1 час в секундах
 # Идемпотентность покупок (Set: member=product_id)
 KEY_PURCHASED_IDS = "buy:purchased_ids"
 
+# Атомарная блокировка покупки (String: key=buy:lock:{product_id}, TTL 5 мин)
+KEY_BUY_LOCK = "buy:lock:{}"  # .format(product_id)
+
 # Очередь обогащения pricehistory (Set: member=market_hash_name)
 KEY_ENRICH_QUEUE = "steam:enrich_queue"
 

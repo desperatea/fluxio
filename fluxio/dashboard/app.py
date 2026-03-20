@@ -876,6 +876,8 @@ def _sidebar(current: str) -> str:
         ("user", "/items", "grid-3x3", "Catalog"),
         ("user", "/candidates", "target", "Candidates"),
         ("user", "/purchases", "shopping-cart", "Purchases"),
+        ("user", "/audit", "shield-check", "Audit"),
+        ("user", "/price-map", "flame", "Price Map"),
     ]
 
     items_html = ""
@@ -973,11 +975,18 @@ function toggleSidebar() {{
 }}
 async function workerAction(name, action) {{
   try {{
-    const res = await fetch(`/api/v1/workers/${{name}}/${{action}}`, {{method:'POST'}});
+    const res = await fetch(`/api/v1/workers/${{encodeURIComponent(name)}}/${{action}}`, {{
+      method:'POST',
+      headers: {{'X-Fluxio-CSRF': '1'}},
+    }});
     if (res.ok) location.reload();
     else alert('Ошибка: ' + (await res.json()).error);
   }} catch(e) {{ alert('Ошибка: ' + e.message); }}
 }}
+document.addEventListener('click', function(e) {{
+  const btn = e.target.closest('.worker-btn[data-worker]');
+  if (btn) workerAction(btn.dataset.worker, btn.dataset.action);
+}});
 </script>
 </body>
 </html>"""
@@ -993,6 +1002,28 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
 
     app = FastAPI(title="Fluxio Dashboard", version="2.0.0")
     app.state.container = container
+
+    # ─── CSRF-защита для POST-запросов ───────────────────────────────────────
+    from starlette.middleware.base import BaseHTTPMiddleware
+
+    class CSRFMiddleware(BaseHTTPMiddleware):
+        """Проверяет наличие заголовка X-Fluxio-CSRF на всех POST-запросах.
+
+        Браузер не отправляет custom-заголовки в cross-origin запросах
+        без CORS preflight, что делает CSRF-атаку невозможной.
+        """
+
+        async def dispatch(self, request: Request, call_next):  # type: ignore[override]
+            if request.method in ("POST", "PUT", "DELETE", "PATCH"):
+                csrf_header = request.headers.get("X-Fluxio-CSRF")
+                if not csrf_header:
+                    return JSONResponse(
+                        {"error": "Отсутствует CSRF-заголовок"},
+                        status_code=403,
+                    )
+            return await call_next(request)
+
+    app.add_middleware(CSRFMiddleware)
 
     # ─── Manual Buy Router ──────────────────────────────────────────────────────
     from fluxio.dashboard.manual_buy import router as manual_buy_router
@@ -1350,9 +1381,9 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
                     if st.last_error:
                         err_html = f'<div style="color:var(--danger);font-size:11px;margin-top:4px">{_esc(st.last_error)}</div>'
                     if st.paused:
-                        btn = f'<button class="worker-btn" onclick="workerAction(\'{_esc(st.name)}\',\'resume\')">&#9654; Resume</button>'
+                        btn = f'<button class="worker-btn" data-worker="{_esc(st.name)}" data-action="resume">&#9654; Resume</button>'
                     else:
-                        btn = f'<button class="worker-btn" onclick="workerAction(\'{_esc(st.name)}\',\'pause\')">&#9646;&#9646; Pause</button>'
+                        btn = f'<button class="worker-btn" data-worker="{_esc(st.name)}" data-action="pause">&#9646;&#9646; Pause</button>'
                     workers_html += f"""<div class="worker-card">
                       <div class="worker-dot {dot_class}"></div>
                       <div class="worker-info">
@@ -2088,7 +2119,7 @@ loadMore();
         extra_js = """<script>
 async function clearCandidates() {
   if (!confirm('Clear all candidates? New ones will appear as prices update.')) return;
-  const resp = await fetch('/api/v1/candidates/clear', {method: 'POST'});
+  const resp = await fetch('/api/v1/candidates/clear', {method: 'POST', headers: {'X-Fluxio-CSRF': '1'}});
   const data = await resp.json();
   if (data.cleared !== undefined) {
     alert('Cleared: ' + data.cleared + ' candidates');
@@ -2303,6 +2334,7 @@ document.querySelectorAll('th.sortable').forEach(th => {
                         )
 
                     steam_url = f"https://steamcommunity.com/market/listings/570/{quote(p.market_hash_name)}"
+                    pricemap_url = f"/price-map?item={quote(p.market_hash_name)}"
                     p_img = img_cache.get(p.market_hash_name, "")
                     p_img_tag = (
                         f'<img src="{_esc(p_img)}" alt="" '
@@ -2332,6 +2364,9 @@ document.querySelectorAll('th.sortable').forEach(th => {
                         f'<td style="white-space:nowrap">{p_img_tag}'
                         f'<a href="{steam_url}" target="_blank" style="color:var(--text)">'
                         f'{_esc(p.market_hash_name)}</a>'
+                        f' <a href="{pricemap_url}" target="_blank" title="Price Map" '
+                        f'style="color:var(--accent);font-size:11px;text-decoration:none;'
+                        f'opacity:0.7;margin-left:6px">📊</a>'
                         f'{filter_note}</td>'
                         f"<td>{buy_btn}</td>"
                         f"<td>${price:.4f}</td>"
@@ -2489,7 +2524,7 @@ document.addEventListener('DOMContentLoaded', applyFilters);
 
 async function clearPurchases() {
   if (!confirm('Delete ALL purchases from database? This cannot be undone.')) return;
-  const resp = await fetch('/api/v1/purchases/clear', {method: 'POST'});
+  const resp = await fetch('/api/v1/purchases/clear', {method: 'POST', headers: {'X-Fluxio-CSRF': '1'}});
   const data = await resp.json();
   if (data.cleared !== undefined) {
     alert('Deleted: ' + data.cleared + ' purchases');
@@ -2766,7 +2801,7 @@ async function confirmBuy(name, maxPrice) {
   try {
     const resp = await fetch('/api/v1/manual-buy', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: {'Content-Type': 'application/json', 'X-Fluxio-CSRF': '1'},
       body: JSON.stringify({market_hash_name: name, max_price_usd: maxPrice})
     });
     const data = await resp.json();
@@ -3067,6 +3102,554 @@ function closeBuyModal() {
 
         return _layout("Purchases", "/purchases", content + buy_modal_html,
                        extra_head='<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>') + extra_js
+
+    # ─── Audit ─────────────────────────────────────────────────────────────────
+
+    @app.get("/audit", response_class=HTMLResponse)
+    async def page_audit() -> str:
+        """Аудит покупок по правилам buy order."""
+        from urllib.parse import quote
+
+        from fluxio.config import FeesConfig
+        from fluxio.db.session import async_session_factory
+        from fluxio.db.unit_of_work import UnitOfWork
+
+        am = config.anti_manipulation
+        passed_rows: list[str] = []
+        failed_rows: list[str] = []
+        stats = {
+            "total": 0, "passed": 0, "failed": 0,
+            "spent_passed": 0.0, "spent_failed": 0.0,
+            "fail_reasons": {},
+        }
+
+        try:
+            async with UnitOfWork(async_session_factory) as uow:
+                all_purchases = await uow.purchases.get_all(limit=100_000)
+
+                items_cache: dict[str, object] = {}
+                for p in all_purchases:
+                    if p.market_hash_name not in items_cache:
+                        items_cache[p.market_hash_name] = await uow.items.get_by_name(
+                            p.market_hash_name,
+                        )
+
+                for p in all_purchases:
+                    if p.status not in ("success", "pending"):
+                        continue
+
+                    price = float(p.price_usd) if p.price_usd else 0
+                    steam = float(p.steam_price_usd) if p.steam_price_usd else 0
+                    item = items_cache.get(p.market_hash_name)
+
+                    buy_order = float(item.steam_buy_order_price) if item and item.steam_buy_order_price else 0
+                    median_30d = float(item.steam_median_30d) if item and item.steam_median_30d else 0
+                    listings = int(item.steam_sell_listings) if item and item.steam_sell_listings else 0
+                    cv = float(item.price_stability_cv) if item and item.price_stability_cv else 0
+                    spike = float(item.price_spike_ratio) if item and item.price_spike_ratio else 0
+                    vol_7d = int(item.steam_volume_7d) if item and item.steam_volume_7d else 0
+                    img_url = item.image_url if item and getattr(item, "image_url", None) else ""
+
+                    # ── Проверки buy order ──
+                    verdict = "PASS"
+                    reason = ""
+
+                    if buy_order <= 0:
+                        verdict = "FAIL"
+                        reason = "Нет buy orders"
+                    elif steam > 0 and buy_order > 0:
+                        spread_ratio = steam / buy_order
+                        is_cheap = steam <= am.cheap_price_threshold
+                        max_spread = am.max_spread_ratio_cheap if is_cheap else am.max_spread_ratio_normal
+                        if spread_ratio > max_spread:
+                            verdict = "FAIL"
+                            reason = f"Spread {spread_ratio:.2f}x > {max_spread}x"
+                        elif not is_cheap:
+                            net_bo = FeesConfig.calc_net_steam(
+                                buy_order,
+                                config.fees.steam_valve_fee_percent,
+                                config.fees.steam_game_fee_percent,
+                            )
+                            if net_bo < price:
+                                verdict = "FAIL"
+                                reason = f"Убыток по BO: net=${net_bo:.4f} < cs2dt=${price:.4f}"
+
+                    # Прибыль
+                    net_steam = FeesConfig.calc_net_steam(steam) if steam > 0 else 0
+                    profit = net_steam - price if steam > 0 and price > 0 else 0
+                    net_bo_val = FeesConfig.calc_net_steam(buy_order) if buy_order > 0 else 0
+                    bo_profit = net_bo_val - price if buy_order > 0 and price > 0 else 0
+
+                    spread_str = f"{steam / buy_order:.2f}x" if buy_order > 0 and steam > 0 else "—"
+
+                    stats["total"] += 1
+                    disc = float(p.discount_percent) if p.discount_percent else 0
+                    ts = p.purchased_at.strftime("%m-%d %H:%M") if p.purchased_at else "—"
+                    steam_url = f"https://steamcommunity.com/market/listings/570/{quote(p.market_hash_name)}"
+
+                    img_tag = (
+                        f'<img src="{_esc(img_url)}" alt="" '
+                        f'style="width:32px;height:32px;object-fit:contain;border-radius:4px;vertical-align:middle">'
+                        if img_url else '<div style="width:32px;height:32px;background:var(--bg-hover);border-radius:4px;display:inline-block;vertical-align:middle"></div>'
+                    )
+
+                    profit_color = "var(--success)" if profit >= 0 else "var(--danger)"
+                    bo_profit_color = "var(--success)" if bo_profit >= 0 else "var(--danger)"
+
+                    row = f"""<tr>
+<td style="white-space:nowrap">{ts}</td>
+<td>
+  <div style="display:flex;align-items:center;gap:8px">
+    {img_tag}
+    <a href="{_esc(steam_url)}" target="_blank" rel="noopener"
+       style="color:var(--accent);text-decoration:none;font-size:13px"
+       title="{_esc(p.market_hash_name)}">{_esc(p.market_hash_name[:40])}</a>
+  </div>
+</td>
+<td>${price:.4f}</td>
+<td>${steam:.4f}</td>
+<td>${buy_order:.4f}</td>
+<td>{spread_str}</td>
+<td>${median_30d:.4f}</td>
+<td>{disc:.1f}%</td>
+<td style="color:{profit_color}">${profit:.4f}</td>
+<td style="color:{bo_profit_color}">${bo_profit:.4f}</td>
+<td>{vol_7d}</td>
+"""
+
+                    if verdict == "PASS":
+                        stats["passed"] += 1
+                        stats["spent_passed"] += price
+                        row += "</tr>"
+                        passed_rows.append(row)
+                    else:
+                        stats["failed"] += 1
+                        stats["spent_failed"] += price
+                        stats["fail_reasons"][reason] = stats["fail_reasons"].get(reason, 0) + 1
+                        row += f'<td><span class="badge badge-danger" style="font-size:10px;white-space:nowrap">{_esc(reason)}</span></td></tr>'
+                        failed_rows.append(row)
+
+        except Exception as e:
+            logger.error(f"Audit page error: {e}")
+            return _layout("Audit", "/audit", f'<div class="stat-card"><p style="color:var(--danger)">Ошибка: {_esc(str(e))}</p></div>')
+
+        # ── Карточки статистики ──
+        fail_pct = (stats["failed"] / stats["total"] * 100) if stats["total"] else 0
+        reasons_html = ""
+        for r, cnt in sorted(stats["fail_reasons"].items(), key=lambda x: -x[1]):
+            reasons_html += f'<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px">{_esc(r)}</span><span class="badge badge-danger" style="font-size:11px">{cnt}</span></div>'
+
+        summary = f"""
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:24px">
+  <div class="stat-card">
+    <div class="stat-label">Всего покупок</div>
+    <div class="stat-value">{stats['total']}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Прошли аудит</div>
+    <div class="stat-value" style="color:var(--success)">{stats['passed']}</div>
+    <div class="stat-label">${stats['spent_passed']:.2f}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Не прошли</div>
+    <div class="stat-value" style="color:var(--danger)">{stats['failed']} ({fail_pct:.1f}%)</div>
+    <div class="stat-label">${stats['spent_failed']:.2f}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Причины отклонения</div>
+    {reasons_html if reasons_html else '<div class="stat-label">—</div>'}
+  </div>
+</div>
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:24px;padding:12px;background:var(--bg-surface);border-radius:var(--radius-sm);border:1px solid var(--border)">
+  <div><span style="color:var(--text-muted);font-size:12px">Spread (дешёвые ≤${am.cheap_price_threshold})</span><br><strong>max {am.max_spread_ratio_cheap}x</strong></div>
+  <div><span style="color:var(--text-muted);font-size:12px">Spread (обычные)</span><br><strong>max {am.max_spread_ratio_normal}x</strong></div>
+  <div><span style="color:var(--text-muted);font-size:12px">Buy orders обязательны</span><br><strong>{'Да' if am.require_buy_orders else 'Нет'}</strong></div>
+</div>"""
+
+        th = """<tr>
+<th>Дата</th><th>Предмет</th><th>CS2DT</th><th>Steam</th>
+<th>Buy Order</th><th>Spread</th><th>Медиана 30д</th><th>Дисконт</th>
+<th>Прибыль</th><th>Прибыль (BO)</th><th>Vol 7д</th>"""
+
+        failed_section = ""
+        if failed_rows:
+            failed_section = f"""
+<h2 style="color:var(--danger);margin:24px 0 12px;font-size:18px">
+  <i data-lucide="x-circle" style="width:20px;height:20px;vertical-align:middle"></i>
+  Не прошли ({stats['failed']})
+</h2>
+<div class="table-wrap">
+<table class="data-table">
+<thead>{th}<th>Причина</th></tr></thead>
+<tbody>{''.join(failed_rows)}</tbody>
+</table>
+</div>"""
+
+        passed_section = f"""
+<h2 style="color:var(--success);margin:24px 0 12px;font-size:18px">
+  <i data-lucide="check-circle" style="width:20px;height:20px;vertical-align:middle"></i>
+  Прошли аудит ({stats['passed']})
+</h2>
+<div class="table-wrap">
+<table class="data-table">
+<thead>{th}</tr></thead>
+<tbody>{''.join(passed_rows)}</tbody>
+</table>
+</div>"""
+
+        extra_css = """
+.table-wrap { overflow-x:auto; margin-bottom:24px; border:1px solid var(--border); border-radius:var(--radius-sm); }
+.data-table { width:100%; border-collapse:collapse; font-size:13px; }
+.data-table th { position:sticky; top:0; background:var(--bg-elevated); padding:10px 12px; text-align:left;
+  font-size:11px; text-transform:uppercase; color:var(--text-muted); letter-spacing:0.05em;
+  border-bottom:1px solid var(--border); white-space:nowrap; }
+.data-table td { padding:8px 12px; border-bottom:1px solid var(--border); white-space:nowrap; color:var(--text-secondary); }
+.data-table tbody tr:hover { background:var(--bg-hover); }
+"""
+
+        content = summary + failed_section + passed_section
+
+        return _layout("Audit — Buy Order", "/audit", content, extra_css=extra_css)
+
+    # ─── Price Map — тепловая карта продаж ────────────────────────────────────
+
+    @app.get("/price-map", response_class=HTMLResponse)
+    async def page_price_map(request: Request) -> str:
+        """Тепловая карта продаж предмета на Steam Market по ценовым точкам."""
+        from collections import Counter
+        from datetime import timedelta
+        from urllib.parse import quote
+
+        item_name = request.query_params.get("item", "").strip()
+
+        # ── Форма поиска ──
+        search_form = f"""
+<div class="stat-card" style="margin-bottom:20px;">
+  <form method="get" action="/price-map" style="display:flex; gap:12px; align-items:end; flex-wrap:wrap;">
+    <div style="flex:1; min-width:300px;">
+      <label style="color:var(--text-secondary); font-size:12px; display:block; margin-bottom:4px;">
+        Market Hash Name предмета
+      </label>
+      <input type="text" name="item" value="{_esc(item_name)}"
+        placeholder="Abdomen of the Glutton's Larder"
+        style="width:100%; padding:10px 14px; background:var(--bg); border:1px solid var(--border);
+               border-radius:8px; color:var(--text); font-size:14px; outline:none;"
+        onfocus="this.style.borderColor='var(--accent)'"
+        onblur="this.style.borderColor='var(--border)'"
+      >
+    </div>
+    <button type="submit" style="padding:10px 24px; background:var(--accent); color:#fff;
+            border:none; border-radius:8px; cursor:pointer; font-size:14px; font-weight:600;
+            height:42px;">
+      Анализ
+    </button>
+  </form>
+</div>
+"""
+
+        if not item_name:
+            return _layout("Price Map", "/price-map", search_form)
+
+        # ── Получить Steam клиент ──
+        steam = None
+        try:
+            if _container:
+                from fluxio.api.steam_client import SteamClient
+                if _container.is_initialized(SteamClient):
+                    steam = await _container.get(SteamClient)
+        except Exception:
+            pass
+
+        if not steam:
+            err = '<div class="stat-card"><p style="color:var(--danger);">Steam клиент недоступен. Запустите бота.</p></div>'
+            return _layout("Price Map", "/price-map", search_form + err)
+
+        # ── Запросить историю ──
+        try:
+            history = await steam.get_price_history(item_name, app_id=570)
+        except Exception as e:
+            err = f'<div class="stat-card"><p style="color:var(--danger);">Ошибка API: {_esc(str(e))}</p></div>'
+            return _layout("Price Map", "/price-map", search_form + err)
+
+        if not history:
+            err = '<div class="stat-card"><p style="color:var(--warning);">Нет данных. Возможно предмет не найден или куки протухли.</p></div>'
+            return _layout("Price Map", "/price-map", search_form + err)
+
+        # ── Парсинг и агрегация ──
+        cutoff_30d = datetime.now(timezone.utc) - timedelta(days=30)
+        cutoff_7d = datetime.now(timezone.utc) - timedelta(days=7)
+
+        # Продажи по цене: {price_cents: total_volume}
+        sales_by_price_30d: Counter[int] = Counter()
+        sales_by_price_7d: Counter[int] = Counter()
+        all_prices: list[float] = []
+        daily_volume: Counter[str] = Counter()  # "YYYY-MM-DD" → volume
+
+        for entry in history:
+            if len(entry) < 3:
+                continue
+            date_str, price, volume_str = entry[0], entry[1], entry[2]
+            try:
+                clean = date_str.split(": +")[0].strip()
+                dt = datetime.strptime(clean, "%b %d %Y %H")
+                dt = dt.replace(tzinfo=timezone.utc)
+            except (ValueError, IndexError):
+                continue
+
+            vol = int(str(volume_str).replace(",", "")) if volume_str else 0
+            price_f = float(price)
+            price_cents = round(price_f * 100)  # в центах для точной группировки
+
+            if dt >= cutoff_30d:
+                sales_by_price_30d[price_cents] += vol
+                all_prices.extend([price_f] * vol)
+                day_key = dt.strftime("%Y-%m-%d")
+                daily_volume[day_key] += vol
+
+            if dt >= cutoff_7d:
+                sales_by_price_7d[price_cents] += vol
+
+        if not all_prices:
+            err = '<div class="stat-card"><p style="color:var(--warning);">Нет продаж за последние 30 дней.</p></div>'
+            return _layout("Price Map", "/price-map", search_form + err)
+
+        import statistics as stat_mod
+
+        total_sales = len(all_prices)
+        median_price = stat_mod.median(all_prices)
+        mean_price = stat_mod.mean(all_prices)
+        min_price = min(all_prices)
+        max_price = max(all_prices)
+
+        # ── Данные для гистограммы (отсортировано по цене) ──
+        sorted_prices_30d = sorted(sales_by_price_30d.items())
+        max_volume = max(sales_by_price_30d.values()) if sales_by_price_30d else 1
+
+        # ── Steam ссылка ──
+        steam_url = f"https://steamcommunity.com/market/listings/570/{quote(item_name, safe='')}"
+
+        # ── Информация из БД (если есть) ──
+        db_info = ""
+        try:
+            from fluxio.db.session import async_session_factory
+            from fluxio.db.unit_of_work import UnitOfWork
+            async with UnitOfWork(async_session_factory) as uow:
+                db_item = await uow.items.get_by_name(item_name)
+                if db_item:
+                    cs2dt_p = float(db_item.price_usd) if db_item.price_usd else 0
+                    steam_p = float(db_item.steam_price_usd) if db_item.steam_price_usd else 0
+                    buy_order = float(db_item.steam_buy_order_price) if db_item.steam_buy_order_price else 0
+                    median_30d = float(db_item.steam_median_30d) if db_item.steam_median_30d else 0
+                    listings = int(db_item.steam_sell_listings) if db_item.steam_sell_listings else 0
+                    vol_7d = int(db_item.steam_volume_7d) if db_item.steam_volume_7d else 0
+
+                    # Рассчитать net
+                    from fluxio.config import FeesConfig
+                    net_listing = FeesConfig.calc_net_steam(steam_p) if steam_p else 0
+                    net_buy = FeesConfig.calc_net_steam(buy_order) if buy_order else 0
+                    roi_listing = ((net_listing - cs2dt_p) / cs2dt_p * 100) if cs2dt_p > 0 and net_listing > 0 else 0
+                    roi_buy = ((net_buy - cs2dt_p) / cs2dt_p * 100) if cs2dt_p > 0 and net_buy > 0 else 0
+
+                    db_info = f"""
+<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:12px; margin-bottom:20px;">
+  <div class="stat-card">
+    <div class="stat-label">CS2DT цена</div>
+    <div class="stat-value" style="color:var(--accent);">${cs2dt_p:.2f}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Steam листинг</div>
+    <div class="stat-value">${steam_p:.2f}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Buy Order</div>
+    <div class="stat-value" style="color:{'var(--danger)' if buy_order <= 0 else 'var(--success)'};">${buy_order:.2f}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Медиана 30д (БД)</div>
+    <div class="stat-value">${median_30d:.2f}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Листингов</div>
+    <div class="stat-value">{listings}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Объём 7д</div>
+    <div class="stat-value">{vol_7d}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">ROI (листинг)</div>
+    <div class="stat-value" style="color:{'var(--success)' if roi_listing > 0 else 'var(--danger)'};">{roi_listing:+.1f}%</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">ROI (buy order)</div>
+    <div class="stat-value" style="color:{'var(--success)' if roi_buy > 0 else 'var(--danger)'};">{roi_buy:+.1f}%</div>
+  </div>
+</div>
+"""
+        except Exception:
+            pass
+
+        # ── Сводка ──
+        summary_html = f"""
+<div style="display:flex; align-items:center; gap:16px; margin-bottom:20px; flex-wrap:wrap;">
+  <h2 style="margin:0; color:var(--text);">{_esc(item_name)}</h2>
+  <a href="{steam_url}" target="_blank" rel="noopener"
+     style="padding:6px 16px; background:#1b2838; color:#66c0f4; border-radius:6px;
+            text-decoration:none; font-size:13px; font-weight:500; border:1px solid #2a475e;">
+    Steam Market &rarr;
+  </a>
+</div>
+{db_info}
+<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:12px; margin-bottom:24px;">
+  <div class="stat-card">
+    <div class="stat-label">Продаж (30д)</div>
+    <div class="stat-value">{total_sales:,}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Медиана</div>
+    <div class="stat-value">${median_price:.2f}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Средняя</div>
+    <div class="stat-value">${mean_price:.2f}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Мин / Макс</div>
+    <div class="stat-value" style="font-size:16px;">${min_price:.2f} — ${max_price:.2f}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Ценовых точек</div>
+    <div class="stat-value">{len(sales_by_price_30d)}</div>
+  </div>
+</div>
+"""
+
+        # ── Гистограмма (CSS bars) ──
+        bars_html = ""
+        # Топ-цены для подсветки
+        top_5_prices = set(p for p, _ in sales_by_price_30d.most_common(5))
+
+        for price_cents, vol in sorted_prices_30d:
+            price_usd = price_cents / 100
+            pct = vol / max_volume * 100
+            is_top = price_cents in top_5_prices
+            vol_7d = sales_by_price_7d.get(price_cents, 0)
+
+            # Цвет: тепловая карта от синего (мало) к красному (много)
+            intensity = vol / max_volume
+            if intensity > 0.8:
+                color = "#ef4444"  # красный — пик продаж
+            elif intensity > 0.5:
+                color = "#f97316"  # оранжевый
+            elif intensity > 0.25:
+                color = "#eab308"  # жёлтый
+            elif intensity > 0.1:
+                color = "#22c55e"  # зелёный
+            else:
+                color = "#3b82f6"  # синий — мало продаж
+
+            label_style = "font-weight:700; color:var(--text);" if is_top else "color:var(--text-secondary);"
+            bars_html += f"""
+<div class="price-row" style="{'background:rgba(255,255,255,0.03);' if is_top else ''}">
+  <div class="price-label" style="{label_style}">${price_usd:.2f}</div>
+  <div class="bar-cell">
+    <div class="bar" style="width:{max(pct, 0.5):.1f}%; background:{color};"></div>
+  </div>
+  <div class="vol-label">{vol:,}</div>
+  <div class="vol-7d-label">{vol_7d if vol_7d else '—'}</div>
+</div>
+"""
+
+        chart_html = f"""
+<div class="stat-card" style="padding:0; overflow:hidden;">
+  <div style="padding:16px 20px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center;">
+    <h3 style="margin:0; font-size:15px; color:var(--text);">Распределение продаж по цене (30 дней)</h3>
+    <div style="display:flex; gap:16px; font-size:11px; color:var(--text-secondary);">
+      <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#ef4444;margin-right:4px;"></span>Пик</span>
+      <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#f97316;margin-right:4px;"></span>Высокий</span>
+      <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#eab308;margin-right:4px;"></span>Средний</span>
+      <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#22c55e;margin-right:4px;"></span>Умеренный</span>
+      <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#3b82f6;margin-right:4px;"></span>Мало</span>
+    </div>
+  </div>
+  <div style="padding:8px 16px;">
+    <div class="price-row" style="border-bottom:1px solid var(--border); padding-bottom:6px; margin-bottom:6px;">
+      <div class="price-label" style="font-weight:600; color:var(--text-secondary); font-size:11px;">ЦЕНА</div>
+      <div class="bar-cell" style="font-weight:600; color:var(--text-secondary); font-size:11px;">ОБЪЁМ ПРОДАЖ</div>
+      <div class="vol-label" style="font-weight:600; color:var(--text-secondary); font-size:11px;">30Д</div>
+      <div class="vol-7d-label" style="font-weight:600; color:var(--text-secondary); font-size:11px;">7Д</div>
+    </div>
+    {bars_html}
+  </div>
+</div>
+"""
+
+        # ── Дневной объём (Chart.js) ──
+        sorted_days = sorted(daily_volume.items())
+        day_labels = [d for d, _ in sorted_days]
+        day_values = [v for _, v in sorted_days]
+
+        daily_chart_html = f"""
+<div class="stat-card" style="margin-top:20px;">
+  <h3 style="margin:0 0 16px; font-size:15px; color:var(--text);">Дневной объём продаж</h3>
+  <canvas id="dailyVolumeChart" height="200"></canvas>
+</div>
+<script>
+document.addEventListener('DOMContentLoaded', function() {{
+  const ctx = document.getElementById('dailyVolumeChart');
+  if (ctx && typeof Chart !== 'undefined') {{
+    new Chart(ctx, {{
+      type: 'bar',
+      data: {{
+        labels: {day_labels},
+        datasets: [{{
+          label: 'Продажи',
+          data: {day_values},
+          backgroundColor: 'rgba(59,130,246,0.6)',
+          borderColor: 'rgba(59,130,246,1)',
+          borderWidth: 1,
+          borderRadius: 3,
+        }}]
+      }},
+      options: {{
+        responsive: true,
+        plugins: {{ legend: {{ display: false }} }},
+        scales: {{
+          x: {{
+            ticks: {{ color: '#888', maxRotation: 45 }},
+            grid: {{ color: 'rgba(255,255,255,0.05)' }}
+          }},
+          y: {{
+            ticks: {{ color: '#888' }},
+            grid: {{ color: 'rgba(255,255,255,0.05)' }}
+          }}
+        }}
+      }}
+    }});
+  }}
+}});
+</script>
+"""
+
+        # ── CSS для гистограммы ──
+        extra_css = """
+.price-row { display:flex; align-items:center; gap:8px; padding:3px 0; }
+.price-label { width:60px; text-align:right; font-size:13px; font-family:'Courier New',monospace; flex-shrink:0; }
+.bar-cell { flex:1; min-width:0; }
+.bar { height:20px; border-radius:3px; transition:width 0.3s; min-width:2px; }
+.vol-label { width:55px; text-align:right; font-size:12px; color:var(--text-secondary); font-family:'Courier New',monospace; flex-shrink:0; }
+.vol-7d-label { width:45px; text-align:right; font-size:12px; color:var(--text-secondary); font-family:'Courier New',monospace; flex-shrink:0; }
+.price-row:hover { background:rgba(255,255,255,0.05) !important; }
+.price-row:hover .bar { opacity:0.85; }
+"""
+
+        content = search_form + summary_html + chart_html + daily_chart_html
+
+        return _layout(
+            "Price Map", "/price-map", content,
+            extra_head='<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>',
+            extra_css=extra_css,
+        )
 
     return app
 

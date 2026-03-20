@@ -25,7 +25,7 @@ from datetime import datetime, timedelta, timezone
 from loguru import logger
 
 from fluxio.api.steam_client import SteamClient
-from fluxio.config import config
+from fluxio.config import FeesConfig, config
 from fluxio.core.workers.base import BaseWorker
 from fluxio.db.session import async_session_factory
 from fluxio.db.unit_of_work import UnitOfWork
@@ -148,7 +148,8 @@ class UpdaterWorker(BaseWorker):
         if cached and cached.get("median"):
             try:
                 steam_median_24h = float(cached["median"])
-                steam_volume_24h = int(cached.get("volume", 0)) or None
+                raw_vol = cached.get("volume")
+                steam_volume_24h = int(raw_vol) if raw_vol is not None else None
                 steam_lowest = float(cached["lowest"]) if cached.get("lowest") else None
                 logger.debug(f"Updater: кэш [{hash_name}] lowest=${steam_lowest}, median_24h=${steam_median_24h:.4f}")
             except (ValueError, TypeError):
@@ -182,6 +183,9 @@ class UpdaterWorker(BaseWorker):
 
         # Текущая цена листинга для расчёта дисконта
         steam_current = steam_lowest if steam_lowest and steam_lowest > 0 else steam_median_24h
+        if steam_current is None or steam_current <= 0:
+            logger.debug(f"Updater: [{hash_name}] нет валидной Steam цены (lowest={steam_lowest}, median_24h={steam_median_24h})")
+            return
 
         # ── Шаг 2: Обновить freshness и БД ──
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -256,6 +260,36 @@ class UpdaterWorker(BaseWorker):
                 await redis_client.srem(KEY_CANDIDATES, hash_name)
                 return
 
+            # ── Scoring v2: оценка по реальным продажам ──
+            scoring_cfg = config.scoring
+            sell_prob = float(item.sell_probability or 0)
+            weighted_price = float(item.weighted_price_usd or 0)
+            expected_profit = float(item.expected_profit_usd or 0)
+            concentration = float(item.price_concentration or 0)
+            volume_30d = float(item.steam_volume_7d or 0) * 4.3  # приблизительно из 7д
+
+            # Если есть histogram_updated_at — используем точный объём из scoring
+            has_scoring = item.histogram_updated_at is not None
+
+            scoring_pass = False
+            scoring_reasons: list[str] = []
+            if has_scoring:
+                if sell_prob < scoring_cfg.min_sell_probability:
+                    scoring_reasons.append(
+                        f"sell_prob={sell_prob:.1f}%<{scoring_cfg.min_sell_probability}%"
+                    )
+                if concentration < scoring_cfg.min_concentration:
+                    scoring_reasons.append(
+                        f"conc={concentration:.1f}%<{scoring_cfg.min_concentration}%"
+                    )
+                if expected_profit <= 0:
+                    scoring_reasons.append(
+                        f"profit=${expected_profit:.4f}<=0"
+                    )
+                scoring_pass = len(scoring_reasons) == 0
+            else:
+                scoring_reasons.append("нет scoring данных")
+
             # ── Пункт 1: Ratio check — цена листинга vs медиана 30д ──
             if steam_median_30d > 0:
                 price_to_median_ratio = steam_current / steam_median_30d
@@ -277,7 +311,6 @@ class UpdaterWorker(BaseWorker):
             else:
                 reference_price = steam_current
 
-            from fluxio.config import FeesConfig
             net_steam = FeesConfig.calc_net_steam(
                 reference_price,
                 config.fees.steam_valve_fee_percent,
@@ -330,12 +363,45 @@ class UpdaterWorker(BaseWorker):
                     f"анти-манипуляция: {', '.join(reasons)}"
                 )
 
-            if (
+            # ── Старая система (дисконт по листингу) ──
+            old_pass = (
                 discount >= config.trading.min_discount_percent
                 and volume_ok
                 and manipulation_ok
                 and config.trading.min_price_usd <= item_price <= config.trading.max_price_usd
-            ):
+            )
+
+            # ── Новая система (Scoring v2) ──
+            # В scoring проверяем: spike (из старой), min_listings (уже проверен выше),
+            # + scoring метрики (sell_prob, concentration, profit)
+            new_pass = (
+                scoring_pass
+                and spike_ok
+                and config.trading.min_price_usd <= item_price <= config.trading.max_price_usd
+            )
+
+            # ── Режим обучения: логируем расхождения ──
+            if has_scoring and old_pass != new_pass:
+                old_verdict = "✅" if old_pass else "❌"
+                new_verdict = "✅" if new_pass else "❌"
+                scoring_detail = (
+                    f"sp={sell_prob:.1f}%, conc={concentration:.1f}%, "
+                    f"profit=${expected_profit:.4f}, wp=${weighted_price:.4f}"
+                )
+                logger.warning(
+                    f"[SCORING] [{hash_name}] расхождение: "
+                    f"OLD={old_verdict} (дисконт={discount:.1f}%) "
+                    f"NEW={new_verdict} ({scoring_detail})"
+                    + (f" | причины: {', '.join(scoring_reasons)}" if scoring_reasons else "")
+                )
+
+            # Решение: в learning_mode используем старую систему
+            if scoring_cfg.learning_mode:
+                is_candidate = old_pass
+            else:
+                is_candidate = new_pass
+
+            if is_candidate:
                 await redis_client.sadd(KEY_CANDIDATES, hash_name)
                 logger.info(
                     f"Updater: КАНДИДАТ [{hash_name}] "
@@ -345,6 +411,7 @@ class UpdaterWorker(BaseWorker):
                     f"медиана 30д=${steam_median_30d:.4f}, "
                     f"CV={price_cv:.3f}, spike={spike_ratio:.2f}, "
                     f"sales@price={sales_at_price}"
+                    f"{f', sp={sell_prob:.1f}%, conc={concentration:.1f}%' if has_scoring else ''}"
                 )
             else:
                 await redis_client.srem(KEY_CANDIDATES, hash_name)

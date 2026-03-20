@@ -205,6 +205,15 @@ class Item(Base):
     steam_item_nameid: Mapped[int | None] = mapped_column(Integer, nullable=True)
     steam_sell_listings: Mapped[int | None] = mapped_column(Integer, nullable=True)
     steam_buy_order_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Scoring v2: метрики из истории продаж
+    sell_probability: Mapped[float | None] = mapped_column(Float, nullable=True)
+    weighted_price_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    expected_profit_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    price_concentration: Mapped[float | None] = mapped_column(Float, nullable=True)
+    p10_price_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    histogram_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     first_seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

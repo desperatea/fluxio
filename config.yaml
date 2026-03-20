@@ -30,6 +30,19 @@ anti_manipulation:
   max_price_cv: 0.5               # Макс. коэффициент вариации цены
   max_price_to_median_ratio: 2.0  # Макс. отношение цены листинга к медиане 30д
   min_steam_listings: 15          # Мин. листингов на Steam Market
+  # Проверка buy order (реальный спрос)
+  max_spread_ratio_cheap: 3.0     # Макс. листинг/buy_order для предметов <= cheap_price_threshold
+  max_spread_ratio_normal: 2.0    # Макс. листинг/buy_order для предметов > cheap_price_threshold
+  cheap_price_threshold: 0.15     # Граница "дешёвого" предмета (USD)
+  require_buy_orders: true        # Отклонять если нет buy orders вообще
+
+scoring:
+  min_volume_30d: 50              # Мин. продаж за 30д (нет данных → не покупать)
+  min_sell_probability: 90        # Мин. вероятность прибыльной продажи (%)
+  min_concentration: 40           # Мин. концентрация продаж в полосе ±20% (%)
+  min_profit_margin: 20           # Мин. прибыль при расчёте break-even (%)
+  analysis_period_days: 30        # Период анализа истории продаж (дней)
+  learning_mode: true             # true = логировать решения, но не переключать
 
 safety:
   max_purchases_per_hour: 80      # Лимит покупок в час (kill switch)

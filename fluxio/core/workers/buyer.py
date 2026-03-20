@@ -31,6 +31,7 @@ from fluxio.db.session import async_session_factory
 from fluxio.db.unit_of_work import UnitOfWork
 from fluxio.utils.redis_client import (
     CHANNEL_PURCHASES,
+    KEY_BUY_LOCK,
     KEY_CANDIDATES,
     KEY_PURCHASED_IDS,
     get_redis,
@@ -258,7 +259,12 @@ class BuyerWorker(BaseWorker):
                 if listing_discount < config.trading.min_discount_percent:
                     break  # дальше дисконт только меньше
 
-                # Идемпотентность: Redis (быстро) + PostgreSQL (надёжно)
+                # Идемпотентность: атомарный Redis SETNX + PostgreSQL
+                lock_key = KEY_BUY_LOCK.format(product_id)
+                lock_acquired = await redis.set(lock_key, "1", nx=True, ex=300)
+                if not lock_acquired:
+                    # Другой воркер уже обрабатывает этот лот
+                    continue
                 already_in_redis = await redis.sismember(KEY_PURCHASED_IDS, product_id)
                 if already_in_redis:
                     continue

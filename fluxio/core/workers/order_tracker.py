@@ -84,7 +84,9 @@ class OrderTrackerWorker(BaseWorker):
         created_at = order.created_at
 
         # Проверяем таймаут P2P (>12ч)
-        age = datetime.now(timezone.utc) - created_at.replace(tzinfo=timezone.utc)
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        age = datetime.now(timezone.utc) - created_at
         if age > timedelta(hours=P2P_STALE_HOURS):
             logger.warning(
                 f"OrderTracker: ордер {order_id} зависший ({age.total_seconds() / 3600:.1f}ч), "
